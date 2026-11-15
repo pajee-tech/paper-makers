@@ -4,10 +4,13 @@ import { useRouter } from "next/navigation";
 import QuestionForm, { cleanDraft, emptyDraft, type DraftQuestion } from "./QuestionForm";
 import MathText from "./MathText";
 import { api, useCatalog } from "./useCatalog";
-import { TEMPLATES, paperTotal, sectionMarks } from "@/lib/templates";
-import { PAPER_TYPE_LABEL, QTYPE_LABEL, type PaperSection, type PaperTypeT, type PrintSettings, type QType, type QuestionSnapshot } from "@/lib/types";
+import { TEMPLATES, TEMPLATE_GROUPS, paperTotal, sectionMarks } from "@/lib/templates";
+import { parseNumberList } from "@/lib/bookParse";
+import type { BookChapterDTO } from "./BookViewer";
+import { LEVEL_LABEL, PAPER_TYPE_LABEL, QTYPE_LABEL, QTYPE_SHORT, type Level, type PaperSection, type PaperTypeT, type PrintSettings, type QType, type QuestionSnapshot } from "@/lib/types";
 
-type BankQ = DraftQuestion & { id: string; chapterId: string };
+type BankQ = DraftQuestion & { id: string; chapterId: string; exerciseId?: string | null; qNo?: string | null; pageNo?: number | null; fromBook?: boolean };
+interface BookOpt { id: string; title: string; className: string; subjectName: string; board: string | null; match: number; shared: boolean; _count: { chapters: number; items: number } }
 type BSection = PaperSection & { count: number };
 
 export interface BuilderInitial {
@@ -37,7 +40,7 @@ function toSnapshot(q: DraftQuestion & { id?: string }, marks: number): Question
 
 export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) {
   const router = useRouter();
-  const { classes } = useCatalog();
+  const { classes, reload } = useCatalog();
   const [meta, setMeta] = useState({
     title: initial?.title ?? "",
     paperType: (initial?.paperType ?? "MONTHLY") as PaperTypeT,
@@ -49,6 +52,18 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
   const [chapterIds, setChapterIds] = useState<string[]>([]);
   const [sections, setSections] = useState<BSection[]>(() => (initial?.sections ?? []).map((s) => ({ ...s, count: s.questions.length })));
   const [bank, setBank] = useState<BankQ[]>([]);
+  // --- textbook library source ---
+  const [useBank, setUseBank] = useState(true);
+  const [useBook, setUseBook] = useState(false);
+  const [books, setBooks] = useState<BookOpt[]>([]);
+  const [showAllBooks, setShowAllBooks] = useState(false);
+  const [bookErr, setBookErr] = useState("");
+  const [bookId, setBookId] = useState("");
+  const [outline, setOutline] = useState<BookChapterDTO[]>([]);
+  const [bookChapterIds, setBookChapterIds] = useState<string[]>([]);
+  const [withGenerated, setWithGenerated] = useState(true);
+  const [bookItems, setBookItems] = useState<BankQ[]>([]);
+  const [byNo, setByNo] = useState<{ sec: number; exerciseId: string; numbers: string; anyType: boolean } | null>(null);
   const [custom, setCustom] = useState<{ sec: number; draft: DraftQuestion } | null>(null);
   const [err, setErr] = useState("");
   const [saving, setSaving] = useState(false);
@@ -56,6 +71,7 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
   const cls = classes.find((c) => c.id === meta.classId);
   const sub = cls?.subjects.find((s) => s.id === meta.subjectId);
   const total = paperTotal(sections);
+  const all = useMemo(() => [...(useBank ? bank : []), ...(useBook ? bookItems : [])], [useBank, bank, useBook, bookItems]);
   const used = useMemo(() => new Set(sections.flatMap((s) => s.questions.map((q) => q.id))), [sections]);
   const templates = useMemo(() => (cls ? [...TEMPLATES].sort((a, b) => Number(b.level.includes(cls.level)) - Number(a.level.includes(cls.level))) : TEMPLATES), [cls]);
 
@@ -66,8 +82,63 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
     api<{ questions: BankQ[] }>(`/api/questions?take=500&chapterIds=${ids.join(",")}`, "GET").then((d) => setBank(d.questions)).catch(() => setBank([]));
   }, [chapterIds, sub]);
 
+  // Books for this class + subject (shared platform library + own).
+  useEffect(() => {
+    if (!cls) return;
+    api<{ books: BookOpt[] }>(`/api/books?className=${encodeURIComponent(cls.name)}&subjectName=${encodeURIComponent(sub?.name ?? "")}`, "GET")
+      .then((d) => {
+        setBookErr("");
+        setBooks(d.books);
+        const best = d.books.find((b) => b.match === 3);
+        if (best && !bookId) { setBookId(best.id); setUseBook(true); }
+      })
+      .catch((e) => { setBooks([]); setBookErr((e as Error).message); });
+  }, [cls, sub]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    setOutline([]); setBookChapterIds([]); setBookItems([]);
+    if (!bookId) return;
+    api<{ chapters: BookChapterDTO[] }>(`/api/books/${bookId}`, "GET").then((d) => setOutline(d.chapters)).catch(() => {});
+  }, [bookId]);
+
+  useEffect(() => {
+    if (!bookId || !useBook) return setBookItems([]);
+    const src = withGenerated ? "EXERCISE,MANUAL,GENERATED" : "EXERCISE,MANUAL";
+    api<{ items: (DraftQuestion & { id: string; chapterId: string; exerciseId: string | null; qNo: string | null; pageNo: number | null })[] }>(
+      `/api/books/${bookId}/items?source=${src}${bookChapterIds.length ? `&chapterIds=${bookChapterIds.join(",")}` : ""}`, "GET",
+    ).then((d) => setBookItems(d.items.map((q) => ({ ...q, id: `book-${q.id}`, fromBook: true })))).catch(() => setBookItems([]));
+  }, [bookId, useBook, bookChapterIds, withGenerated]);
+
+  async function addCatalog(kind: "class" | "subject") {
+    const name = prompt(kind === "class" ? "New class name (e.g. O Level 1, Hifz Class)" : `New subject for ${cls?.name}`);
+    if (!name?.trim()) return;
+    try {
+      if (kind === "class") {
+        const level = (prompt("Level? Type one: EARLY_YEARS, PRIMARY, MIDDLE, MATRIC, INTERMEDIATE, GRADUATION", "MATRIC") ?? "MATRIC").toUpperCase() as Level;
+        const c = await api<{ id: string }>("/api/catalog", "POST", { kind, name: name.trim(), level: level in LEVEL_LABEL ? level : "MATRIC" });
+        await reload();
+        setMeta((m) => ({ ...m, classId: c.id, subjectId: "" }));
+      } else if (cls) {
+        const sj = await api<{ id: string }>("/api/catalog", "POST", { kind, classId: cls.id, name: name.trim(), isUrdu: /urdu|اردو/i.test(name) });
+        await reload();
+        setMeta((m) => ({ ...m, subjectId: sj.id }));
+      }
+    } catch (e) { setErr((e as Error).message); }
+  }
+
+  function addByNumbers() {
+    if (!byNo) return;
+    const s = sections[byNo.sec];
+    const inEx = bookItems.filter((q) => q.exerciseId === byNo.exerciseId);
+    const wanted = parseNumberList(byNo.numbers, inEx.length);
+    const picked = wanted.map((n) => inEx[n - 1]).filter((q) => q && !used.has(q.id) && (byNo.anyType || q.type === s.questionType));
+    if (!picked.length) return alert("No matching questions for those numbers (check the numbers, or tick “any type”).");
+    updateSec(byNo.sec, { questions: [...s.questions, ...picked.map((q) => toSnapshot(q, s.marksEach))] });
+    setByNo(null);
+  }
+
   const updateSec = (i: number, patch: Partial<BSection>) => setSections((ss) => ss.map((s, j) => (j === i ? { ...s, ...patch } : s)));
-  const pool = (type: QType) => bank.filter((q) => q.type === type && !used.has(q.id));
+  const pool = (type: QType) => all.filter((q) => q.type === type && !used.has(q.id));
 
   function applyTemplate(key: string) {
     const t = TEMPLATES.find((x) => x.key === key);
@@ -83,7 +154,7 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
       ss.map((s) => {
         const keep = s.questions.filter((q) => q.id.startsWith("custom-"));
         keep.forEach((q) => taken.add(q.id));
-        const avail = shuffle(bank.filter((q) => q.type === s.questionType && !taken.has(q.id)));
+        const avail = shuffle(all.filter((q) => q.type === s.questionType && !taken.has(q.id)));
         const pick = avail.slice(0, Math.max(0, s.count - keep.length));
         pick.forEach((q) => taken.add(q.id));
         return { ...s, questions: [...keep, ...pick.map((q) => toSnapshot(q, s.questionType === "MATCH_COLUMNS" ? q.marks ?? s.marksEach : s.marksEach))] };
@@ -141,17 +212,26 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
         <div className="grid3">
           <div className="field">
             <label>Class</label>
-            <select value={meta.classId} onChange={(e) => { setMeta({ ...meta, classId: e.target.value, subjectId: "" }); setChapterIds([]); }}>
-              <option value="">— select —</option>
-              {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+            <div className="row" style={{ flexWrap: "nowrap", gap: 4 }}>
+              <select value={meta.classId} onChange={(e) => { setMeta({ ...meta, classId: e.target.value, subjectId: "" }); setChapterIds([]); setBookId(""); }}>
+                <option value="">— select class —</option>
+                {(Object.keys(LEVEL_LABEL) as Level[]).map((l) => {
+                  const list = classes.filter((c) => c.level === l);
+                  return list.length ? <optgroup key={l} label={LEVEL_LABEL[l]}>{list.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</optgroup> : null;
+                })}
+              </select>
+              <button type="button" className="btn-ghost btn-sm" title="Add your own class" onClick={() => addCatalog("class")}>+</button>
+            </div>
           </div>
           <div className="field">
             <label>Subject</label>
-            <select value={meta.subjectId} onChange={(e) => { setMeta({ ...meta, subjectId: e.target.value }); setChapterIds([]); }}>
-              <option value="">— select —</option>
-              {cls?.subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+            <div className="row" style={{ flexWrap: "nowrap", gap: 4 }}>
+              <select value={meta.subjectId} disabled={!cls} onChange={(e) => { setMeta({ ...meta, subjectId: e.target.value }); setChapterIds([]); setBookId(""); }}>
+                <option value="">{cls ? `— ${cls.subjects.length} subjects —` : "select class first"}</option>
+                {cls?.subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+              <button type="button" className="btn-ghost btn-sm" disabled={!cls} title="Add a subject your school teaches" onClick={() => addCatalog("subject")}>+</button>
+            </div>
           </div>
           <div className="field">
             <label>Exam type</label>
@@ -167,8 +247,45 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
           <div className="field"><label>Time allowed</label><input value={meta.timeAllowed} placeholder="2:30 Hours" onChange={(e) => setMeta({ ...meta, timeAllowed: e.target.value })} /></div>
         </div>
         {sub && (
-          <div>
-            <label>Syllabus — chapters (none ticked = whole subject) · {bank.length} questions available</label>
+          <div className="qcard" style={{ background: "#f8fafc" }}>
+            <label>Where should questions come from?</label>
+            <div className="row">
+              <label className="check"><input type="checkbox" checked={useBank} onChange={(e) => setUseBank(e.target.checked)} /> My question bank ({bank.length})</label>
+              <label className="check"><input type="checkbox" checked={useBook} disabled={!books.length} onChange={(e) => setUseBook(e.target.checked)} /> 📘 From textbook / syllabus ({useBook ? bookItems.length : books.filter((b) => b.match >= 1).length ? "available" : "none yet"})</label>
+              <span className="small muted">+ you can always type your own questions in any section.</span>
+            </div>
+            {bookErr && <div className="small" style={{ color: "var(--warn)" }}>{bookErr}</div>}
+            {!books.length && !bookErr && <div className="small muted">No book for {cls?.name} {sub.name} in the library yet. <a href="/dashboard/library/upload">Add the book</a> once and every teacher can use it.</div>}
+            {useBook && books.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <div className="row">
+                  <select style={{ maxWidth: 460 }} value={bookId} onChange={(e) => setBookId(e.target.value)}>
+                    <option value="">— choose book —</option>
+                    {books.filter((b) => showAllBooks || b.match >= 1).map((b) => <option key={b.id} value={b.id}>{b.title} · {b.className} · {b.subjectName}{b.board ? ` · ${b.board}` : ""} ({b._count.items} Qs){b.shared ? " · shared" : ""}</option>)}
+                  </select>
+                  <label className="check small"><input type="checkbox" checked={showAllBooks} onChange={(e) => setShowAllBooks(e.target.checked)} /> show all books</label>
+                  <label className="check small"><input type="checkbox" checked={withGenerated} onChange={(e) => setWithGenerated(e.target.checked)} /> include auto-generated questions</label>
+                </div>
+                {outline.length > 0 && (
+                  <>
+                    <label style={{ marginTop: 8 }}>Book chapters for this paper (none ticked = whole book)</label>
+                    <div className="row" style={{ gap: 10 }}>
+                      {outline.map((c) => (
+                        <label key={c.id} className="check">
+                          <input type="checkbox" checked={bookChapterIds.includes(c.id)} onChange={(e) => setBookChapterIds((ids) => (e.target.checked ? [...ids, c.id] : ids.filter((x) => x !== c.id)))} />
+                          {c.number}. {c.title} <span className="muted small">({c._count.items})</span>
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        {sub && sub.chapters.length > 0 && useBank && (
+          <div style={{ marginTop: 10 }}>
+            <label>Question bank chapters (none ticked = whole subject) · {bank.length} questions available</label>
             <div className="row" style={{ gap: 10 }}>
               {sub.chapters.map((ch) => (
                 <label key={ch.id} className="check">
@@ -188,10 +305,13 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
           <span className="spacer" />
           <select style={{ width: 330 }} defaultValue="" onChange={(e) => { applyTemplate(e.target.value); e.target.value = ""; }}>
             <option value="">Load a template…</option>
-            {templates.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+            {TEMPLATE_GROUPS.map((g) => {
+              const list = templates.filter((t) => t.group === g);
+              return list.length ? <optgroup key={g} label={g}>{list.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}</optgroup> : null;
+            })}
           </select>
           <button className="btn-ghost" onClick={() => setSections((ss) => [...ss, { id: rid(), title: `Q.${ss.length + 1}`, questionType: "SHORT", marksEach: 2, count: 5, questions: [] }])}>+ Section</button>
-          <button disabled={!bank.length || !sections.length} onClick={autofill}>🎲 Auto-pick from bank</button>
+          <button disabled={!all.length || !sections.length} onClick={autofill}>🎲 Auto-pick from bank</button>
         </div>
         <p className="small muted">Counts and marks are editable. “Attempt any” sets the choice rule — only that many questions count toward the total.</p>
 
@@ -240,12 +360,42 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
                 <span className={`small ${s.questions.length < s.count ? "" : "muted"}`} style={{ color: s.questions.length < s.count ? "var(--warn)" : undefined }}>
                   {s.questions.length}/{s.count} selected · {avail} unused in bank
                 </span>
-                <select style={{ width: 300 }} value="" onChange={(e) => { const q = bank.find((x) => x.id === e.target.value); if (q) updateSec(si, { questions: [...s.questions, toSnapshot(q, s.marksEach)] }); }}>
+                <select style={{ width: 300 }} value="" onChange={(e) => { const q = all.find((x) => x.id === e.target.value); if (q) updateSec(si, { questions: [...s.questions, toSnapshot(q, s.marksEach)] }); }}>
                   <option value="">+ add a specific question from bank…</option>
-                  {pool(s.questionType).map((q) => <option key={q.id} value={q.id}>{(q.text || "[image]").slice(0, 90)}</option>)}
+                  {pool(s.questionType).map((q) => <option key={q.id} value={q.id}>{q.fromBook ? `📘 ${q.qNo ?? ""} ` : ""}{(q.text || "[image]").slice(0, 90)}</option>)}
                 </select>
                 <button className="btn-ghost btn-sm" onClick={() => setCustom({ sec: si, draft: { ...emptyDraft(s.questionType), marks: s.marksEach } })}>+ Write a custom question</button>
+                {useBook && outline.some((c) => c.exercises.length) && (
+                  <button className="btn-ghost btn-sm" onClick={() => setByNo({ sec: si, exerciseId: "", numbers: "", anyType: false })}>📘 Add by exercise & question no.</button>
+                )}
               </div>
+              {byNo?.sec === si && (
+                <div className="card" style={{ marginTop: 8 }}>
+                  <div className="row">
+                    <select style={{ maxWidth: 380 }} value={byNo.exerciseId} onChange={(e) => setByNo({ ...byNo, exerciseId: e.target.value })}>
+                      <option value="">— chapter / exercise —</option>
+                      {outline.filter((c) => !bookChapterIds.length || bookChapterIds.includes(c.id)).map((c) => (
+                        <optgroup key={c.id} label={`Ch ${c.number}: ${c.title}`}>
+                          {c.exercises.map((e) => <option key={e.id} value={e.id}>{e.title} ({e._count.items} Qs)</option>)}
+                        </optgroup>
+                      ))}
+                    </select>
+                    <input style={{ width: 170 }} placeholder="Q no. e.g. 1-5, 8" value={byNo.numbers} onChange={(e) => setByNo({ ...byNo, numbers: e.target.value })} />
+                    <label className="check small"><input type="checkbox" checked={byNo.anyType} onChange={(e) => setByNo({ ...byNo, anyType: e.target.checked })} /> any type</label>
+                    <button className="btn-sm" disabled={!byNo.exerciseId || !byNo.numbers.trim()} onClick={addByNumbers}>Add</button>
+                    <button className="btn-ghost btn-sm" onClick={() => setByNo(null)}>Cancel</button>
+                  </div>
+                  {byNo.exerciseId && (
+                    <ol className="small" style={{ maxHeight: 180, overflow: "auto", margin: "8px 0 0", paddingLeft: 26 }}>
+                      {bookItems.filter((q) => q.exerciseId === byNo.exerciseId).map((q) => (
+                        <li key={q.id} style={{ opacity: q.type === s.questionType || byNo.anyType ? 1 : 0.45 }}>
+                          <span className="badge">{QTYPE_SHORT[q.type]}</span> {q.qNo && <b>({q.qNo})</b>} {q.text.slice(0, 110)} {used.has(q.id) && <span className="badge ok">in paper</span>}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              )}
               {custom?.sec === si && (
                 <div className="card" style={{ marginTop: 8 }}>
                   <QuestionForm compact value={custom.draft} onChange={(d) => setCustom({ sec: si, draft: d })} />

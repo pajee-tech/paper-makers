@@ -15,7 +15,7 @@ interface SessionDTO {
   scores: (ScoreRow & { fatherName?: string | null; parentPhone?: string | null })[];
 }
 
-export default function ResultWorkspace({ sessionId, paper }: { sessionId: string; paper: PaperDTO }) {
+export default function ResultWorkspace({ sessionId, paper, omrAllowed = true }: { sessionId: string; paper: PaperDTO; omrAllowed?: boolean }) {
   const [loaded, setLoaded] = useState(false);
   const [rows, setRows] = useState<ScoreRow[]>([]);
   const [totalMarks, setTotalMarks] = useState(paper.totalMarks);
@@ -102,7 +102,7 @@ export default function ResultWorkspace({ sessionId, paper }: { sessionId: strin
       </div>
 
       <div className="no-print">
-        <CheckedPdfResultCounter paper={paper} rows={rows} totalMarks={totalMarks} onRowsChange={(r) => { setRows(r); setDirty(true); }} />
+        <CheckedPdfResultCounter omrAllowed={omrAllowed} paper={paper} rows={rows} totalMarks={totalMarks} onRowsChange={(r) => { setRows(r); setDirty(true); }} />
       </div>
 
       <div style={{ marginTop: 14 }}>

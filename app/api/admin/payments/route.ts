@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { handle, json } from "@/lib/api";
 import { HttpError, requireSuperAdmin } from "@/lib/auth";
 
+export const dynamic = "force-dynamic";
+
 export const GET = handle(async (req: Request) => {
   await requireSuperAdmin();
   const status = new URL(req.url).searchParams.get("status");

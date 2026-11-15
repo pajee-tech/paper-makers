@@ -7,6 +7,8 @@ import { ownChapter } from "@/lib/ownership";
 import { QTypeZ, QuestionInput } from "@/lib/schemas";
 
 /** GET /api/questions?chapterIds=a,b&type=MCQ&take=200 */
+export const dynamic = "force-dynamic";
+
 export const GET = handle(async (req: Request) => {
   const u = await requireInstitutionUser();
   const sp = new URL(req.url).searchParams;

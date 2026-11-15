@@ -237,7 +237,7 @@ export default function ExamPaperPreview({ paper, editable = true }: { paper: Pa
     else alert(d.error ?? "Could not open result session");
   }
 
-  const watermark = paper.watermark ? <div className={`watermark ${twoUp ? "abs" : ""}`}>FREE TRIAL • {APP}</div> : null;
+  const watermark = paper.watermark ? <div className={`watermark ${twoUp ? "abs" : ""}`}>{paper.watermarkText ?? `FREE TRIAL • ${APP}`}</div> : null;
   const vars = { "--paper-font": `${s.fontSize}pt` } as React.CSSProperties;
 
   return (

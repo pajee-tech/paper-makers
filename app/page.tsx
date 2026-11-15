@@ -1,17 +1,20 @@
 import Link from "next/link";
+import PublicHeader from "@/components/PublicHeader";
 
 const APP = process.env.NEXT_PUBLIC_APP_NAME ?? "PaperMaker PK";
 
 export default function Home() {
   const features = [
-    ["Nursery to Graduation", "Match the columns, blanks, true/false, missing letters, dictation, 4-line & square tracing, BISE Part-I/Part-II, semester papers, case studies and code."],
+    ["Playgroup to BS (Hons)", "Every class and its subjects ready on day one. Match the columns, blanks, true/false, missing letters, dictation, 4-line & square tracing, BISE Part-I/Part-II, semester papers, case studies and code."],
     ["Print in 5 sizes", "A4, Legal, Letter, Folio/Foolscap and A5 2-per-sheet quizzes. Portrait/landscape, 1 or 2 columns, font size, answer key, OMR sheet."],
-    ["Textbook PDF → questions", "Open your class textbook in the browser, pick questions, crop diagrams, equations and Urdu passages. Nothing is uploaded."],
+    ["Textbook & syllabus library", "Books saved page by page with chapters, topics and exercises. Teachers pick a chapter and exercise question numbers — the paper writes itself."],
     ["Urdu & Math", "Proper Nastaliq Urdu (right-to-left) and KaTeX equations for Science and Maths papers."],
     ["Optional instant result", "Type marks, upload Excel/CSV, or scan checked OMR sheets. Get %, grade, pass/fail, positions, award list and 4-per-page result slips."],
     ["WhatsApp parents", "One click sends each student's marks to parents through WhatsApp — free."],
   ];
   return (
+    <>
+    <PublicHeader />
     <main>
       <div className="container hero">
         <span className="badge">For Pakistani schools, colleges & academies</span>
@@ -33,7 +36,8 @@ export default function Home() {
           </div>
         ))}
       </div>
-      <div className="container small muted" style={{ textAlign: "center", padding: 40 }}>Pro plan: pay by JazzCash, EasyPaisa or bank transfer.</div>
+      <div className="container small muted" style={{ textAlign: "center", padding: 40 }}>Pro plan: pay by JazzCash, EasyPaisa or bank transfer. <Link href="/register">Start your free trial</Link></div>
     </main>
+    </>
   );
 }

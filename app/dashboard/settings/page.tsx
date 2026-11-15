@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/components/useCatalog";
 import { fileToCompressed } from "@/lib/clientImage";
+import PasswordInput from "@/components/PasswordInput";
 
 interface Inst {
   name: string; city: string | null; address: string | null; phone: string | null; logoDataUrl: string | null;
@@ -44,15 +45,32 @@ export default function SettingsPage() {
             {inst.logoDataUrl && <><img src={inst.logoDataUrl} alt="" style={{ height: 40 }} /><button className="btn-danger btn-sm" onClick={() => setInst({ ...inst, logoDataUrl: null })}>Remove</button></>}
           </div>
           <button style={{ marginTop: 12 }} onClick={save}>Save</button>
+          <div style={{ borderTop: "1px solid var(--line)", marginTop: 16, paddingTop: 12 }}>
+            <b>Classes & subjects</b>
+            <p className="small muted">Adds any missing standard class (Playgroup → BS Hons) and its subjects. Your own classes and subjects are kept.</p>
+            <button className="btn-ghost btn-sm" onClick={async () => { const r = await api<{ addedClasses: number; addedSubjects: number }>("/api/catalog", "POST", { kind: "seed" }); setMsg(`Added ${r.addedClasses} classes and ${r.addedSubjects} subjects ✔`); }}>Load standard classes & subjects</button>
+          </div>
         </div>
 
         <div className="card" style={{ marginTop: 0 }}>
           <h2>Teachers</h2>
-          <table className="tbl"><tbody>{inst.users.map((u) => <tr key={u.id}><td>{u.name}</td><td>{u.email}</td><td><span className="badge">{u.role.replace("_", " ")}</span></td></tr>)}</tbody></table>
+          <table className="tbl"><tbody>{inst.users.map((u) => (
+            <tr key={u.id}>
+              <td>{u.name}</td><td>{u.email}</td><td><span className="badge">{u.role.replace("_", " ")}</span></td>
+              <td>
+                {u.role === "TEACHER" && (
+                  <div className="row" style={{ gap: 4 }}>
+                    <button className="btn-ghost btn-sm" onClick={async () => { const pw = prompt(`New password for ${u.name} (min 8 characters)`); if (pw && pw.length >= 8) { try { await api("/api/institution", "PATCH", { userId: u.id, password: pw }); setMsg(`Password changed for ${u.name} ✔ — tell them the new password.`); } catch (e) { setMsg((e as Error).message); } } }}>Set password</button>
+                    <button className="btn-danger btn-sm" onClick={async () => { if (confirm(`Remove ${u.name}?`)) { await api(`/api/institution?userId=${u.id}`, "DELETE"); load(); } }}>Remove</button>
+                  </div>
+                )}
+              </td>
+            </tr>
+          ))}</tbody></table>
           <h3 style={{ marginTop: 14 }}>Add a teacher</h3>
           <div className="field"><input placeholder="Name" value={t.name} onChange={(e) => setT({ ...t, name: e.target.value })} /></div>
           <div className="field"><input placeholder="Email" type="email" value={t.email} onChange={(e) => setT({ ...t, email: e.target.value })} /></div>
-          <div className="field"><input placeholder="Temporary password (min 8)" value={t.password} onChange={(e) => setT({ ...t, password: e.target.value })} /></div>
+          <div className="field"><PasswordInput placeholder="Temporary password (min 8)" value={t.password} onChange={(v) => setT({ ...t, password: v })} minLength={8} required={false} autoComplete="new-password" /></div>
           <button onClick={async () => { try { await api("/api/institution", "POST", t); setT({ name: "", email: "", password: "" }); setMsg("Teacher added ✔"); load(); } catch (e) { setMsg((e as Error).message); } }}>Add teacher</button>
         </div>
       </div>

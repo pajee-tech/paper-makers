@@ -7,6 +7,8 @@ import { QuestionInput } from "@/lib/schemas";
 
 type Ctx = { params: { id: string } };
 
+export const dynamic = "force-dynamic";
+
 export const PUT = handle(async (req: Request, { params }: Ctx) => {
   const u = await requireInstitutionUser();
   await ownQuestion(params.id, u.institutionId);

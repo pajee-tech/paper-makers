@@ -1,11 +1,29 @@
 # PaperMaker PK — Exam Paper Generator & Optional Instant Result Maker
 
+© Pajee Technologies. All rights reserved. Proprietary software — see `LICENSE`.
+
 For Pakistani schools, colleges, academies and degree institutes (Nursery → Graduation).
 **100% free stack:** Next.js 14 (App Router) · NextAuth (credentials) · Prisma · Neon PostgreSQL Free Tier · Vercel Hobby.
 There are no paid APIs. PDF reading, cropping, OMR bubble reading and OCR all run **in the teacher's browser**
 (`pdfjs-dist`, `tesseract.js`, Canvas), so the app needs no file storage and has no per-use cost.
 
 ---
+
+## What's new (v1.1)
+
+| Feature | Where |
+|---|---|
+| **Show/hide password** eye on login, register, reset and teacher forms | `components/PasswordInput.tsx` |
+| **Forgot password**: email link via free SMTP (Gmail App Password), or a **one-time link the Super Admin creates** (`/admin → Users`) and sends on WhatsApp. Institution admins can also set a teacher's password. | `app/forgot-password`, `app/reset-password`, `app/api/password/*`, `lib/passwordReset.ts` |
+| **Every class, Playgroup → BS (Hons), with standard subjects** is created for each new institution. Older accounts get them automatically too, or from *Settings → Load standard classes & subjects*. Teachers can add their own class or subject with the **+** next to the dropdowns in *New Paper*. | `lib/curriculum.ts`, `lib/seed.ts` |
+| **Textbook & syllabus library**: upload a book PDF once. Each page's text is saved, along with its chapters, topics (1.1, 1.2…), exercises and numbered questions (MCQ options, (i)(ii) sub-numbers and blanks are detected). There is optional free OCR (English/Urdu) for scanned pages. Super Admin books go to a **shared library** every school can use. | `components/BookUploader.tsx`, `lib/bookParse.ts`, `app/api/books/*` |
+| **Library viewer**: browse chapters, fix question types, turn selected page lines into questions, search the whole book, and **auto-generate** Define / Fill-in-the-blank / True-False questions (with answers) from definition sentences. This is free and uses no AI service. | `components/BookViewer.tsx` |
+| **New Paper → "From textbook"**: pick the book and chapters, then auto-pick questions or use **📘 Add by exercise & question no.** (e.g. *Exercise 2.1 → 1-5, 8*). Your question bank and your own typed questions still work alongside. | `components/PaperBuilder.tsx` |
+| **26 paper templates** in groups: Montessori/Early Years (English, Maths, Urdu, oral), Primary (govt SED/PEC style, premium private style, Maths, Science/GK, Urdu), Middle, Punjab Boards (new SLO 60-mark, classic 75-mark, Arts), FBISE SSC/HSSC and the new 50% objective pattern, Inter Science/Arts, BS/ADP mid and final, BA annual, quick tests | `lib/templates.ts` |
+| **Trial & Pro settings without redeploying** (`/admin → Trial & Pro settings`): free paper count, trial days, watermark text, which features the trial includes (results / OMR / library), user limits, any number of Pro plans with prices, and payment accounts | `lib/settings.ts`, `lib/plan.ts` |
+| **Copyright**: Pajee Technologies footer on every page, `/terms`, `LICENSE`, and "by Pajee Technologies" in the trial watermark | `components/Footer.tsx` |
+
+Database: `npm run build` runs `prisma db push`, so new tables are created on each Vercel deploy. The changes only add tables and columns; existing data is kept.
 
 ## 1. Run locally (about 10 minutes)
 

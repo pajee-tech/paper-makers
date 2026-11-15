@@ -12,6 +12,7 @@ export default function Nav({ isSuper, plan }: { isSuper?: boolean; plan?: strin
         <Link href="/dashboard">Papers</Link>
         <Link href="/dashboard/papers/new">New Paper</Link>
         <Link href="/dashboard/questions">Question Bank</Link>
+        <Link href="/dashboard/library">Book Library</Link>
         <Link href="/dashboard/billing">Billing</Link>
         <Link href="/dashboard/settings">Settings</Link>
         {isSuper && <Link href="/admin">Super Admin</Link>}

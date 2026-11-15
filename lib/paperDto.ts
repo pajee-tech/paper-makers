@@ -7,7 +7,7 @@ type Full = SavedPaper & {
   subject: Subject | null;
 };
 
-export function toPaperDTO(p: Full): PaperDTO {
+export function toPaperDTO(p: Full, watermarkText?: string): PaperDTO {
   return {
     id: p.id,
     title: p.title,
@@ -18,6 +18,7 @@ export function toPaperDTO(p: Full): PaperDTO {
     sections: p.sections as unknown as PaperSection[],
     printSettings: (p.printSettings as unknown as PrintSettings) ?? null,
     watermark: p.watermark,
+    watermarkText,
     className: p.class?.name ?? null,
     subjectName: p.subject?.name ?? null,
     subjectIsUrdu: p.subject?.isUrdu ?? false,

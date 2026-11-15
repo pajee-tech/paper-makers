@@ -33,6 +33,7 @@ export default async function Dashboard() {
       {!plan.isPro && (
         <div className={`alert ${plan.remaining > 0 ? "" : "err"}`}>
           Free trial: <b>{plan.used} / {plan.limit}</b> papers used.{" "}
+          {plan.trialEndsAt && <>Trial {plan.trialExpired ? "ended" : "ends"} on <b>{plan.trialEndsAt.toLocaleDateString("en-GB")}</b>. </>}
           {plan.remaining > 0 ? `${plan.remaining} left.` : "Trial finished."} <Link href="/dashboard/billing">Upgrade to PaperMaker Pro →</Link>
         </div>
       )}

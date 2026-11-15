@@ -2,7 +2,7 @@
   "name": "paper-maker-pk",
   "version": "1.0.0",
   "private": true,
-  "description": "Automated Exam Paper Generator & Optional Instant Result Maker for Pakistani institutions (Nursery to Graduation). 100% free stack.",
+  "description": "PaperMaker PK by Pajee Technologies \u2014 exam paper generator, textbook library & instant result maker for Pakistani institutions (Playgroup to BS).",
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && prisma db push --skip-generate && next build",
@@ -16,10 +16,12 @@
   },
   "dependencies": {
     "@prisma/client": "5.22.0",
+    "@types/nodemailer": "^6.4.17",
     "bcryptjs": "2.4.3",
     "katex": "0.16.11",
     "next": "14.2.35",
     "next-auth": "4.24.11",
+    "nodemailer": "6.9.16",
     "pdfjs-dist": "4.10.38",
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -34,6 +36,9 @@
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
     "prisma": "5.22.0",
-    "typescript": "5.6.3"
-  }
+    "typescript": "5.6.3",
+    "@types/nodemailer": "6.4.17"
+  },
+  "author": "Pajee Technologies",
+  "license": "UNLICENSED"
 }

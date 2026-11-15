@@ -64,6 +64,7 @@ export interface PaperDTO {
   sections: PaperSection[];
   printSettings?: PrintSettings | null;
   watermark: boolean;
+  watermarkText?: string;
   className?: string | null;
   subjectName?: string | null;
   subjectIsUrdu?: boolean;
@@ -123,4 +124,9 @@ export const PAPER_TYPE_LABEL: Record<PaperTypeT, string> = {
   SEND_UP: "Send-Up Examination",
   ANNUAL: "Annual Examination",
   SEMESTER: "Semester Examination",
+};
+
+export const QTYPE_SHORT: Record<QType, string> = {
+  MCQ: "MCQ", TRUE_FALSE: "T/F", FILL_BLANK: "Blank", MATCH_COLUMNS: "Match", MISSING_LETTERS: "Missing", DICTATION: "Dictation",
+  TRACING: "Tracing", PICTURE: "Picture", SHORT: "Short", LONG: "Long", NUMERICAL: "Numerical", TRANSLATION: "Translation", CASE_STUDY: "Case", CODE: "Code",
 };

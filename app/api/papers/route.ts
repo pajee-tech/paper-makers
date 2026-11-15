@@ -7,6 +7,8 @@ import { PaperInput } from "@/lib/schemas";
 import { paperTotal } from "@/lib/templates";
 import type { PaperSection } from "@/lib/types";
 
+export const dynamic = "force-dynamic";
+
 export const GET = handle(async () => {
   const u = await requireInstitutionUser();
   const papers = await prisma.savedPaper.findMany({

@@ -486,7 +486,7 @@ function PdfScanner({ paper, rows, onChange }: { paper: PaperDTO; rows: ScoreRow
 /* ------------------------------------------------------------------ */
 /* Combined component                                                  */
 /* ------------------------------------------------------------------ */
-export default function CheckedPdfResultCounter({ paper, rows, onRowsChange, totalMarks }: { paper: PaperDTO; rows: ScoreRow[]; onRowsChange: (r: ScoreRow[]) => void; totalMarks: number }) {
+export default function CheckedPdfResultCounter({ paper, rows, onRowsChange, totalMarks, omrAllowed = true }: { paper: PaperDTO; rows: ScoreRow[]; onRowsChange: (r: ScoreRow[]) => void; totalMarks: number; omrAllowed?: boolean }) {
   const [tab, setTab] = useState<"manual" | "excel" | "pdf">("manual");
   const hasMcq = answerKeyOf(paper).key.length > 0;
   return (
@@ -498,7 +498,8 @@ export default function CheckedPdfResultCounter({ paper, rows, onRowsChange, tot
       </div>
       {tab === "manual" && <ManualGrid rows={rows} onChange={onRowsChange} totalMarks={totalMarks} hasMcq={hasMcq} />}
       {tab === "excel" && <ExcelImport rows={rows} onChange={(r) => { onRowsChange(r); setTab("manual"); }} />}
-      {tab === "pdf" && <PdfScanner paper={paper} rows={rows} onChange={(r) => { onRowsChange(r); setTab("manual"); }} />}
+      {tab === "pdf" && !omrAllowed && <div className="alert">OMR auto-count is a Pro feature. <a href="/dashboard/billing">Upgrade</a> — or type marks / upload Excel for free.</div>}
+      {tab === "pdf" && omrAllowed && <PdfScanner paper={paper} rows={rows} onChange={(r) => { onRowsChange(r); setTab("manual"); }} />}
     </div>
   );
 }

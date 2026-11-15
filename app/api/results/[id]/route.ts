@@ -9,6 +9,8 @@ import type { GradeBand, ScoreRow } from "@/lib/types";
 
 type Ctx = { params: { id: string } };
 
+export const dynamic = "force-dynamic";
+
 export const GET = handle(async (_req: Request, { params }: Ctx) => {
   const u = await requireInstitutionUser();
   await ownSession(params.id, u.institutionId);
