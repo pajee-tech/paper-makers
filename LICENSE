@@ -1,0 +1,11 @@
+Copyright (c) 2026 Pajee Technologies. All rights reserved.
+
+PaperMaker PK — Exam Paper Generator & Instant Result Maker
+
+This software and its source code, design, templates and documentation are the
+proprietary property of Pajee Technologies. No part of it may be copied,
+modified, distributed, sublicensed, sold or hosted for third parties without
+prior written permission from Pajee Technologies.
+
+Third-party open-source libraries used by this software remain under their own
+licences (see node_modules/*/LICENSE).
