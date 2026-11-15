@@ -59,13 +59,39 @@ function splitInline(s: string): { stem: string; opts: string[] } | null {
   const parts = s.split(/\(\s*([a-dA-D])\s*\)\s*/);
   const opts: string[] = [];
   for (let i = 1; i < parts.length; i += 2) opts.push((parts[i + 1] ?? "").trim());
-  return opts.length >= 3 ? { stem: parts[0].trim(), opts } : null;
+  const stem = parts[0].trim();
+  // A line that *starts* with options may hold just two of them: "(a) … (b) …" then "(c) … (d) …"
+  return opts.length >= 3 || (!stem && opts.length >= 2) ? { stem, opts } : null;
 }
+
+/* ---------------------- header / footer cleaning ---------------------- */
+const PAGE_NO = /^[-–—(\[]?\s*(?:page|p\.|صفحہ)?\s*[\d۰-۹]{1,4}\s*[-–—)\]]?$/i;
+const STRUCTURAL = (l: string) => CHAPTER_EN.test(l) || CHAPTER_UR.test(toAscii(l)) || TOPIC.test(l) || EXERCISE_EN.test(l) || EXERCISE_UR.test(toAscii(l)) || Q_START.test(l) || OPT_LINE.test(l) || !!hintOf(l);
+const footerKey = (l: string) => toAscii(l).toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
+
+/**
+ * Removes running headers/footers ("PCTB Not for Sale", book title, "Unit 3 | 45") and bare page numbers,
+ * so they never get glued onto questions or options.
+ */
+export function cleanPages(pages: RawPage[]): RawPage[] {
+  const count = new Map<string, number>();
+  for (const p of pages) for (const k of new Set(lines(p).map(footerKey))) count.set(k, (count.get(k) ?? 0) + 1);
+  const minRepeat = Math.max(4, Math.ceil(pages.length * 0.25));
+  return pages.map((p) => ({
+    pageNo: p.pageNo,
+    text: lines(p)
+      .filter((l) => !PAGE_NO.test(l))
+      .filter((l) => STRUCTURAL(l) || l.length > 90 || (count.get(footerKey(l)) ?? 0) < minRepeat)
+      .join("\n"),
+  }));
+}
+
 
 const lines = (p: RawPage) => p.text.split(/\n+/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
 
 /* ---------------------------- chapters ---------------------------- */
-export function detectChapterStarts(pages: RawPage[]): ChapterStart[] {
+export function detectChapterStarts(rawPages: RawPage[]): ChapterStart[] {
+  const pages = cleanPages(rawPages);
   const out: ChapterStart[] = [];
   let last = 0;
   for (const p of pages) {
@@ -91,8 +117,9 @@ export function detectChapterStarts(pages: RawPage[]): ChapterStart[] {
 }
 
 /* ---------------------------- full parse ---------------------------- */
-export function parseBook(pages: RawPage[], starts?: ChapterStart[]): ParsedChapter[] {
-  if (!pages.length) return [];
+export function parseBook(rawPages: RawPage[], starts?: ChapterStart[]): ParsedChapter[] {
+  if (!rawPages.length) return [];
+  const pages = cleanPages(rawPages);
   const sorted = [...pages].sort((a, b) => a.pageNo - b.pageNo);
   const lastPage = sorted[sorted.length - 1].pageNo;
   let cs = (starts ?? detectChapterStarts(sorted)).slice().sort((a, b) => a.startPage - b.startPage);
@@ -196,8 +223,8 @@ export function parseBook(pages: RawPage[], starts?: ChapterStart[]): ParsedChap
  * Builds review questions from definition-style sentences in the chapter text:
  *   "Photosynthesis is the process by which …." → Define Photosynthesis. / fill-in-the-blank / true-false
  */
-export function generateFromText(pages: RawPage[], chapter: { startPage: number; endPage: number }, max = 30): ParsedItem[] {
-  const text = pages
+export function generateFromText(rawPages: RawPage[], chapter: { startPage: number; endPage: number }, max = 30): ParsedItem[] {
+  const text = cleanPages(rawPages)
     .filter((p) => p.pageNo >= chapter.startPage && p.pageNo <= chapter.endPage)
     .map((p) => ({ pageNo: p.pageNo, t: p.text.replace(/[ \t]+/g, " ") }));
   const out: ParsedItem[] = [];

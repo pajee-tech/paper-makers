@@ -6,6 +6,7 @@ import MathText from "./MathText";
 import { SvgIcon } from "./SvgIcons";
 import { api, useCatalog } from "./useCatalog";
 import { cachedGet } from "@/lib/clientCache";
+import { parseNumberList } from "@/lib/bookParse";
 import { LEVEL_LABEL, QTYPE_LABEL, type Level, type QType } from "@/lib/types";
 
 interface BankQ extends DraftQuestion { id: string }
@@ -117,6 +118,13 @@ export default function QuestionBank() {
               <input placeholder="New chapter / unit" value={newName.chapter} onChange={(e) => setNewName({ ...newName, chapter: e.target.value })} />
               <button className="btn-sm" onClick={() => addCatalog("chapter")}>+</button>
             </div>
+            <button className="btn-ghost btn-sm" style={{ marginTop: 6 }} title="Smart Syllabus / ALP chapters" onClick={async () => {
+              const input = prompt("Smart Syllabus / ALP chapter numbers (e.g. 1, 2, 4-6). Leave empty to clear.", sub.chapters.filter((c) => c.isAlp).map((c) => c.number).join(", "));
+              if (input === null) return;
+              const want = new Set(parseNumberList(input, 999));
+              for (const c of sub.chapters) if (!!c.isAlp !== want.has(c.number)) await api("/api/catalog", "PATCH", { kind: "chapter", id: c.id, isAlp: want.has(c.number) });
+              reload();
+            }}>📋 Smart Syllabus chapters</button>
             <div className="row" style={{ gap: 4, marginTop: 6 }}>
               <button className="btn-danger btn-sm" onClick={() => removeCatalog("subject", sub.id)}>Delete subject</button>
               {chapterId && <button className="btn-danger btn-sm" onClick={() => removeCatalog("chapter", chapterId)}>Delete chapter</button>}

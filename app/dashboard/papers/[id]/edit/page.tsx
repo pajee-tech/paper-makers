@@ -1,5 +1,5 @@
 import { notFound, redirect } from "next/navigation";
-import PaperBuilder from "@/components/PaperBuilder";
+import PaperBuilder, { type BuildOptions } from "@/components/PaperBuilder";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 import type { PrintSettings } from "@/lib/types";
@@ -22,8 +22,9 @@ export default async function EditPaperPage({ params }: { params: { id: string }
           timeAllowed: p.timeAllowed,
           classId: p.classId,
           subjectId: p.subjectId,
-          sections: await expandSections(p.sections, s.user.institutionId),
+          sections: await expandSections(p.sections, { institutionId: s.user.institutionId, role: s.user.role }),
           printSettings: p.printSettings as unknown as PrintSettings | null,
+          buildOptions: (p.buildOptions as BuildOptions | null) ?? null,
         }}
       />
     </div>

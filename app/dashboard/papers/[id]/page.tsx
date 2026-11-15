@@ -15,7 +15,7 @@ export default async function PaperPage({ params }: { params: { id: string } }) 
     include: { institution: { select: { name: true, city: true, address: true, logoDataUrl: true } }, class: true, subject: true },
   });
   if (!p) notFound();
-  const sections = await expandSections(p.sections, s.user.institutionId);
+  const sections = await expandSections(p.sections, { institutionId: s.user.institutionId, role: s.user.role });
   const dto = toPaperDTO(p, (await getSettings()).trialWatermarkText, sections);
   // Super Admin papers never carry the trial watermark (also covers papers made before this account was set as Super Admin).
   if ((await getPlanState(s.user.institutionId)).isSuperAdmin) dto.watermark = false;

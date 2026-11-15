@@ -28,6 +28,13 @@ export interface BuilderInitial {
   subjectId?: string | null;
   sections: PaperSection[];
   printSettings?: PrintSettings | null;
+  buildOptions?: BuildOptions | null;
+}
+
+/** Builder choices saved with the paper so Edit reopens exactly as it was built. */
+export interface BuildOptions {
+  scope?: Scope; alpOnly?: boolean; marksMode?: MarksMode; useBank?: boolean; useBook?: boolean; withGenerated?: boolean;
+  bookId?: string; bookChapterIds?: string[]; chapterIds?: string[];
 }
 
 const rid = () => Math.random().toString(36).slice(2, 10);
@@ -54,25 +61,31 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
     classId: initial?.classId ?? "",
     subjectId: initial?.subjectId ?? "",
   });
-  const [chapterIds, setChapterIds] = useState<string[]>([]);
+  const bo = initial?.buildOptions ?? null;
+  const [chapterIds, setChapterIds] = useState<string[]>(bo?.chapterIds ?? []);
   const [sections, setSections] = useState<BSection[]>(() => (initial?.sections ?? []).map((s) => ({ ...s, count: s.questions.length })));
   const [bank, setBank] = useState<BankQ[]>([]);
   // --- textbook library source ---
-  const [useBank, setUseBank] = useState(true);
-  const [useBook, setUseBook] = useState(false);
+  const [useBank, setUseBank] = useState(bo?.useBank ?? true);
+  const [useBook, setUseBook] = useState(bo?.useBook ?? false);
   const [books, setBooks] = useState<BookOpt[]>([]);
   const [showAllBooks, setShowAllBooks] = useState(false);
   const [bookErr, setBookErr] = useState("");
-  const [bookId, setBookId] = useState("");
+  const [bookId, setBookId] = useState(bo?.bookId ?? "");
   const [outline, setOutline] = useState<BookChapterDTO[]>([]);
-  const [bookChapterIds, setBookChapterIds] = useState<string[]>([]);
-  const [withGenerated, setWithGenerated] = useState(true);
+  const [bookChapterIds, setBookChapterIds] = useState<string[]>(bo?.bookChapterIds ?? []);
+  const [withGenerated, setWithGenerated] = useState(bo?.withGenerated ?? true);
   const [bookItems, setBookItems] = useState<BankQ[]>([]);
   const [byNo, setByNo] = useState<{ sec: number; exerciseId: string; numbers: string } | null>(null);
   // --- test scope ---
-  const [scope, setScope] = useState<Scope>(initial ? "CUSTOM" : "FULL");
-  const [alpOnly, setAlpOnly] = useState(false);
-  const [marksMode, setMarksMode] = useState<MarksMode>("FULL");
+  // Old papers (saved before build options existed) open as Custom so their chapters are not changed.
+  const [scope, setScope] = useState<Scope>(bo?.scope ?? (initial ? "CUSTOM" : "FULL"));
+  const [alpOnly, setAlpOnly] = useState(bo?.alpOnly ?? false);
+  const [marksMode, setMarksMode] = useState<MarksMode>(bo?.marksMode ?? "FULL");
+  const keepBookChapters = useRef(!!bo?.bookId); // first outline load on Edit keeps the saved chapter ticks
+  const [loadingPool, setLoadingPool] = useState(0); // >0 while questions are being fetched
+  const [autoPick, setAutoPick] = useState(false); // Smart Syllabus ticked → pick questions once the pool has loaded
+  const [editQ, setEditQ] = useState<{ sec: number; qi: number; draft: DraftQuestion } | null>(null);
   const [presetNote, setPresetNote] = useState("");
   const autoTitle = useRef("");
   const [custom, setCustom] = useState<{ sec: number; draft: DraftQuestion } | null>(null);
@@ -92,7 +105,8 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
   useEffect(() => {
     const ids = chapterIds.length ? chapterIds : sub?.chapters.map((c) => c.id) ?? [];
     if (!ids.length) return setBank([]);
-    cachedGet<{ questions: BankQ[] }>(`/api/questions?take=500&chapterIds=${ids.join(",")}`).then((d) => setBank(d.questions)).catch(() => setBank([]));
+    setLoadingPool((n) => n + 1);
+    cachedGet<{ questions: BankQ[] }>(`/api/questions?take=500&chapterIds=${ids.join(",")}`).then((d) => setBank(d.questions)).catch(() => setBank([])).finally(() => setLoadingPool((n) => n - 1));
   }, [chapterIds, sub, refreshKey]);
 
   // Books for this class + subject (shared platform library + own).
@@ -109,7 +123,9 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
   }, [cls, sub, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    setOutline([]); setBookChapterIds([]); setBookItems([]);
+    setOutline([]); setBookItems([]);
+    if (keepBookChapters.current) keepBookChapters.current = false;
+    else setBookChapterIds([]);
     if (!bookId) return;
     cachedGet<{ chapters: BookChapterDTO[] }>(`/api/books/${bookId}`).then((d) => setOutline(d.chapters)).catch(() => {});
   }, [bookId]);
@@ -117,9 +133,10 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
   useEffect(() => {
     if (!bookId || !useBook) return setBookItems([]);
     const src = withGenerated ? "EXERCISE,MANUAL,GENERATED" : "EXERCISE,MANUAL";
+    setLoadingPool((n) => n + 1);
     cachedGet<{ items: (DraftQuestion & { id: string; chapterId: string; exerciseId: string | null; qNo: string | null; pageNo: number | null })[] }>(
       `/api/books/${bookId}/items?source=${src}${bookChapterIds.length ? `&chapterIds=${bookChapterIds.join(",")}` : ""}`,
-    ).then((d) => setBookItems(d.items.map((q) => ({ ...q, id: `book-${q.id}`, fromBook: true })))).catch(() => setBookItems([]));
+    ).then((d) => setBookItems(d.items.map((q) => ({ ...q, id: `book-${q.id}`, fromBook: true })))).catch(() => setBookItems([])).finally(() => setLoadingPool((n) => n - 1));
   }, [bookId, useBook, bookChapterIds, withGenerated, refreshKey]);
 
   // Scope → which chapters (question bank + textbook) feed this paper.
@@ -148,7 +165,10 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
   const scopeTotal = outline.length || bankChapters.length;
   const scopeSelected = (outline.length ? bookChapterIds : chapterIds).filter((x) => x !== "__none__").length || (scope === "CUSTOM" ? 0 : scopeTotal);
   const factor = marksMode === "SCALE" ? scopeFactor(scope, scopeSelected, scopeTotal) : 1;
+  const firstFactor = useRef(true);
   useEffect(() => {
+    // On Edit the saved sections are already scaled — only rescale when the teacher changes the scope later.
+    if (firstFactor.current) { firstFactor.current = false; if (initial) return; }
     setSections((ss) => ss.map((sec) => {
       const scaled = scaleSection(sec, factor);
       return { ...scaled, questions: scaled.questions.slice(0, scaled.count) };
@@ -213,6 +233,13 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
     if (!meta.timeAllowed) setMeta((m) => ({ ...m, timeAllowed: t.timeAllowed }));
   }
 
+  // Smart Syllabus: chapters are filtered by the scope effect, the pool reloads, then questions are picked automatically.
+  useEffect(() => {
+    if (!autoPick || loadingPool > 0) return;
+    const t = setTimeout(() => { autofill(); setAutoPick(false); }, 150);
+    return () => clearTimeout(t);
+  }, [autoPick, loadingPool, all]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function autofill() {
     const taken = new Set<string>();
     setSections((ss) =>
@@ -251,6 +278,7 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
       subjectId: meta.subjectId || null,
       sections: sections.filter((s) => s.questions.length).map(({ count: _c, base: _b, ...s }) => ({ ...s, questions: s.questions.filter((q) => allowedInSection(q, s.questionType)).map((q) => normalizeForSection(q, s.questionType)) })),
       printSettings: initial?.printSettings ?? null,
+      buildOptions: { scope, alpOnly, marksMode, useBank, useBook, withGenerated, bookId: bookId || undefined, bookChapterIds, chapterIds },
     };
     try {
       if (initial) {
@@ -322,7 +350,7 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
               <select style={{ width: 260 }} value={scope} onChange={(e) => { const v = e.target.value as Scope; setScope(v); setMarksMode(v.startsWith("Q") ? "SCALE" : "FULL"); }}>
                 {(Object.keys(SCOPE_LABEL) as Scope[]).map((k) => <option key={k} value={k}>{SCOPE_LABEL[k]}</option>)}
               </select>
-              <label className="check"><input type="checkbox" checked={alpOnly} onChange={(e) => setAlpOnly(e.target.checked)} /> Smart Syllabus / ALP only</label>
+              <label className="check"><input type="checkbox" checked={alpOnly} onChange={(e) => { setAlpOnly(e.target.checked); if (e.target.checked && scope === "CUSTOM") setScope("FULL"); if (e.target.checked && sections.length) setAutoPick(true); }} /> Smart Syllabus / ALP only</label>
               {scope !== "FULL" && (
                 <>
                   <label className="check"><input type="radio" name="marksMode" checked={marksMode === "FULL"} onChange={() => setMarksMode("FULL")} /> Keep full board-pattern marks</label>
@@ -439,11 +467,28 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
                     <div className="row" style={{ flexWrap: "nowrap", alignItems: "flex-start" }}>
                       <div style={{ flex: 1, fontFamily: "Times New Roman, serif" }}>
                         <MathText text={q.text || (q.imageSnippet ? "[image]" : q.urduText ?? "")} />
-                        {q.id.startsWith("custom-") && <span className="badge" style={{ marginLeft: 6 }}>custom</span>}
+                        {q.id.startsWith("custom-") && <span className="badge" style={{ marginLeft: 6 }}>custom / edited</span>}
+                        {q.type === "MCQ" && q.options && <div className="small muted">{q.options.map((o, i) => `(${"abcde"[i]}) ${o}`).join("   ")}</div>}
                       </div>
+                      <button className="btn-ghost btn-sm" title="Edit this question (only in this paper)" onClick={() => setEditQ({ sec: si, qi, draft: { ...q, type: s.questionType } })}>✏️</button>
                       {!q.id.startsWith("custom-") && <button className="btn-ghost btn-sm" title="Swap with another question" onClick={() => swap(si, qi)}>⇄</button>}
                       <button className="btn-danger btn-sm" onClick={() => updateSec(si, { questions: s.questions.filter((_, j) => j !== qi) })}>✕</button>
                     </div>
+                    {editQ?.sec === si && editQ.qi === qi && (
+                      <div className="card" style={{ marginTop: 6 }}>
+                        <div className="small muted" style={{ marginBottom: 6 }}>Changes apply to this paper only — the question bank / textbook stays unchanged.</div>
+                        <QuestionForm compact lockType value={editQ.draft} onChange={(d) => setEditQ({ ...editQ, draft: { ...d, type: s.questionType } })} />
+                        <div className="row" style={{ marginTop: 6 }}>
+                          <button className="btn-sm" onClick={() => {
+                            // An edited question becomes this paper's own copy ("custom-…"), so the original is never modified.
+                            const { id: _old, ...rest } = editQ.draft as DraftQuestion & { id?: string };
+                            updateSec(si, { questions: s.questions.map((x, j) => (j === qi ? toSnapshot({ ...rest, type: s.questionType }, x.marks || s.marksEach, s.questionType) : x)) });
+                            setEditQ(null);
+                          }}>Save change</button>
+                          <button className="btn-ghost btn-sm" onClick={() => setEditQ(null)}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ol>

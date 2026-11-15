@@ -62,6 +62,17 @@ export const PaperInput = z.object({
   subjectId: z.string().nullish(),
   sections: z.array(SectionZ).min(1).max(30),
   printSettings: PrintSettingsZ.nullish(),
+  buildOptions: z.object({
+    scope: z.enum(["FULL", "HALF1", "HALF2", "Q1", "Q2", "Q3", "Q4", "CUSTOM"]).optional(),
+    alpOnly: z.boolean().optional(),
+    marksMode: z.enum(["FULL", "SCALE"]).optional(),
+    useBank: z.boolean().optional(),
+    useBook: z.boolean().optional(),
+    withGenerated: z.boolean().optional(),
+    bookId: z.string().max(40).optional(),
+    bookChapterIds: z.array(z.string().max(40)).max(200).optional(),
+    chapterIds: z.array(z.string().max(40)).max(200).optional(),
+  }).nullish(),
 });
 
 export const ScoreInput = z.object({

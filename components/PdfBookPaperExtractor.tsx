@@ -29,7 +29,7 @@ function splitInlineOptions(s: string): string[] | null {
   // parts: [before, 'a', optA, 'b', optB, ...]
   const opts: string[] = [];
   for (let i = 1; i < parts.length; i += 2) opts.push((parts[i + 1] ?? "").trim());
-  return opts.length >= 3 ? opts : null;
+  return opts.length >= 3 || (opts.length >= 2 && !parts[0].trim()) ? opts : null;
 }
 
 /** Heuristic question detection from a page's text lines. Teachers review every draft. */

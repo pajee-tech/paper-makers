@@ -190,6 +190,8 @@ model SavedPaper {
   sections      Json
   // Last used print settings: { size, orientation, columns, fontSize, showKey, showOmr }
   printSettings Json?
+  // Builder choices restored on Edit: { scope, alpOnly, marksMode, useBank, useBook, bookId, bookChapterIds, chapterIds, withGenerated }
+  buildOptions  Json?
   watermark     Boolean     @default(false) // true when created during FREE_TRIAL
   institutionId String
   institution   Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)

@@ -9,6 +9,16 @@ There are no paid APIs. PDF reading, cropping, OMR bubble reading and OCR all ru
 
 ---
 
+## What's new (v1.4) — fixes from live testing
+
+| Fix | Where |
+|---|---|
+| **Printed papers no longer show "deleted" questions.** The cause: the Super Admin could pick questions from any school's book in the builder, but printing only looked in shared and own-school books. Printing now uses the same access rule as the builder. Each saved reference also keeps a small text-only copy (no images), so a question still prints if its source is later deleted or changed. | `lib/paperRefs.ts` |
+| **Edit reopens exactly as built**: test scope (Full/Half/Quarter), Smart Syllabus, marks mode, book, chapters and question sources are saved with the paper (`SavedPaper.buildOptions`). Older papers open as Custom. | `components/PaperBuilder.tsx`, `prisma/schema.prisma` |
+| **Edit any question inside a paper** with ✏️, whether auto-picked, from the book or typed. The change applies to that paper only; the bank and book stay unchanged. | `PaperBuilder.tsx` |
+| **No page numbers or footers in questions.** The book reader removes bare page numbers (229, 254…) and lines repeated on many pages ("PCTB Not for Sale"). It also reads MCQs whose options are split over two lines. **♻️ Re-read questions** in Book Library re-reads saved books; it keeps question IDs (so existing papers keep working), Smart Syllabus marks, and teacher-added or generated questions. | `lib/bookParse.ts`, `BookViewer.tsx`, `app/api/books/[id]/structure` |
+| **Smart Syllabus**: in Book Library and Question Bank, **📋 Smart Syllabus chapters** marks chapters in one go (e.g. `1, 2, 4-6`). In New Paper, ticking **Smart Syllabus / ALP only** picks those chapters and **auto-selects the questions**. | `BookViewer.tsx`, `QuestionBank.tsx`, `PaperBuilder.tsx` |
+
 ## What's new (v1.3) — database savings & trial control
 
 | Mechanism | How it works | Where |

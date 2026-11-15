@@ -7,7 +7,7 @@ import QuestionForm, { cleanDraft, emptyDraft, type DraftQuestion } from "./Ques
 import { detectQuestions } from "./PdfBookPaperExtractor";
 import { api } from "./useCatalog";
 import { cachedGet } from "@/lib/clientCache";
-import { generateFromText, type ParsedItem } from "@/lib/bookParse";
+import { generateFromText, parseBook, parseNumberList, type ParsedItem } from "@/lib/bookParse";
 import { QTYPE_LABEL, type QType } from "@/lib/types";
 
 export interface BookMeta { id: string; title: string; board?: string | null; edition?: string | null; className: string; subjectName: string; language: string; pageCount: number; shared: boolean; canEdit: boolean }
@@ -54,6 +54,38 @@ export default function BookViewer({ bookId }: { bookId: string }) {
     flash(`${list.length} question(s) added ✔`);
   }
 
+  /** Re-reads every saved page with the latest reader (removes page numbers / footers, fixes split MCQ options). */
+  async function reRead() {
+    if (!book || !confirm("Re-read all questions of this book from its saved pages?\n\nTeacher-added and auto-generated questions, Smart Syllabus marks and questions already used in papers are kept.")) return;
+    setMsg("Reading saved pages…");
+    const pages: { pageNo: number; text: string }[] = [];
+    for (let p = 1; p <= book.pageCount; p += 31) {
+      const d = await api<{ pages: { pageNo: number; text: string }[] }>(`/api/books/${bookId}/pages?from=${p}&to=${Math.min(book.pageCount, p + 30)}`, "GET");
+      pages.push(...d.pages);
+    }
+    const parsed = parseBook(pages, chapters.map((c) => ({ number: c.number, title: c.title, startPage: c.startPage })));
+    const r = await api<{ items: number }>(`/api/books/${bookId}/structure`, "PUT", {
+      keepExisting: true,
+      chapters: parsed.map((c) => ({
+        number: c.number, title: c.title, startPage: c.startPage, endPage: c.endPage, topics: c.topics.slice(0, 200), isAlp: chapters.find((x) => x.number === c.number)?.isAlp,
+        exercises: c.exercises.map((e) => ({ title: e.title.slice(0, 200), startPage: e.startPage, endPage: e.endPage, items: e.items.slice(0, 800).map((it) => ({ qNo: it.qNo, pageNo: it.pageNo, type: it.type, text: it.text.slice(0, 5000), options: it.options ?? null, correctOption: it.correctOption ?? null, answer: it.answer ?? null, topic: it.topic ?? null, source: it.source })) })),
+      })),
+    });
+    await refresh();
+    flash(`Re-read complete ✔ ${r.items} questions.`);
+  }
+
+  /** Smart Syllabus (ALP): mark chapters by number in one go, e.g. "1, 2, 4-6". */
+  async function setSmartSyllabus() {
+    const cur = chapters.filter((c) => c.isAlp).map((c) => c.number).join(", ");
+    const input = prompt("Smart Syllabus / ALP chapter numbers for this book (e.g. 1, 2, 4-6). Leave empty to clear.", cur);
+    if (input === null) return;
+    const want = new Set(parseNumberList(input, 999));
+    for (const c of chapters) if (!!c.isAlp !== want.has(c.number)) await api(`/api/books/${bookId}`, "PATCH", { chapter: { id: c.id, isAlp: want.has(c.number) } });
+    await loadBook();
+    flash(want.size ? `Smart Syllabus set: chapters ${[...want].join(", ")} ✔` : "Smart Syllabus cleared");
+  }
+
   if (!book) return <p className="muted">{msg || "Loading…"}</p>;
 
   return (
@@ -65,6 +97,8 @@ export default function BookViewer({ bookId }: { bookId: string }) {
         </div>
         <span className="spacer" />
         <a className="btn btn-ghost" href="/dashboard/library">← Library</a>
+        {book.canEdit && <button className="btn-ghost" title="Mark which chapters are in the Smart Syllabus" onClick={setSmartSyllabus}>📋 Smart Syllabus chapters</button>}
+        {book.canEdit && <button className="btn-ghost" title="Re-read questions with the improved reader" onClick={reRead}>♻️ Re-read questions</button>}
         {book.canEdit && <button className="btn-danger" onClick={async () => { if (confirm("Delete this book, its pages and all its questions?")) { await api(`/api/books/${bookId}`, "DELETE"); router.push("/dashboard/library"); } }}>Delete book</button>}
       </div>
       {msg && <div className="alert">{msg}</div>}

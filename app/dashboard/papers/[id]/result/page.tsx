@@ -34,5 +34,5 @@ export default async function ResultPage({ params, searchParams }: { params: { i
       data: { paperId: p.id, institutionId: iid, totalMarks: p.totalMarks, passPercent: 33, gradingScheme: DEFAULT_GRADES as unknown as object[] },
     });
 
-  return <ResultWorkspace sessionId={session.id} paper={toPaperDTO(p, undefined, await expandSections(p.sections, iid))} omrAllowed={plan.features.omrScan} />;
+  return <ResultWorkspace sessionId={session.id} paper={toPaperDTO(p, undefined, await expandSections(p.sections, { institutionId: iid, role: s.user.role }))} omrAllowed={plan.features.omrScan} />;
 }
