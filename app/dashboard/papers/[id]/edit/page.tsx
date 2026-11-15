@@ -1,0 +1,30 @@
+import { notFound, redirect } from "next/navigation";
+import PaperBuilder from "@/components/PaperBuilder";
+import { prisma } from "@/lib/prisma";
+import { getSession } from "@/lib/auth";
+import type { PaperSection, PrintSettings } from "@/lib/types";
+
+export default async function EditPaperPage({ params }: { params: { id: string } }) {
+  const s = await getSession();
+  if (!s?.user.institutionId) redirect("/login");
+  const p = await prisma.savedPaper.findFirst({ where: { id: params.id, institutionId: s.user.institutionId } });
+  if (!p) notFound();
+  return (
+    <div>
+      <h1>Edit Paper</h1>
+      <PaperBuilder
+        initial={{
+          id: p.id,
+          title: p.title,
+          paperType: p.paperType,
+          examDate: p.examDate?.toISOString() ?? null,
+          timeAllowed: p.timeAllowed,
+          classId: p.classId,
+          subjectId: p.subjectId,
+          sections: p.sections as unknown as PaperSection[],
+          printSettings: p.printSettings as unknown as PrintSettings | null,
+        }}
+      />
+    </div>
+  );
+}
