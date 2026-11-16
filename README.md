@@ -9,6 +9,25 @@ There are no paid APIs. PDF reading, cropping, OMR bubble reading and OCR all ru
 
 ---
 
+## What's new (v1.8) — fast OCR, pick questions from the book, easy Question Bank, testing edition
+
+- **Two editions, one code:** `lib/edition.ts` (`EDITION`, or env `NEXT_PUBLIC_EDITION=test|full`). *Testing edition*: books are uploaded and their exercise questions are ticked into papers by hand; no 🎲 auto-pick from books and no Smart Syllabus switches anywhere. Footer shows `v1.8` (+ "testing edition") so a deployment can be checked.
+- **Smart OCR (default):** upload reads the PDF's own text, then only the **top 35 %** of scanned pages (chapter headings, ~5× faster) with **several OCR workers in parallel** (`createOcrPool`, CPU cores − 1, max 4) and the **book's own language only** (English + Urdu is a checkbox, ~2× slower). Book saved in minutes; Book Library then reads each chapter's **exercise pages** in full (from the chapter's last page back to its "EXERCISE" heading) chapter by chapter, and each chapter's questions can be used as soon as it is done. Also: "Read whole chapter", "Read these pages" (teacher gives page numbers), Pause / Continue. The PDF is kept in this browser (IndexedDB, `lib/pdfStore.ts`) — nothing uploaded; another computer picks it once. New column `BookPage.ocrLevel` (0 PDF text, 1 heading scan, 2 full OCR; added by `prisma db push`). Heading-scan pages are never used for questions (`forParsing`). Measured: 40-page scanned book → chapters 99 s + exercises 11 s on a 2-core test machine, 48/48 questions.
+- **New Paper:** 🎲 Auto-pick also in the bottom bar, with the reason when it can't run (no questions in these chapters…). **📘 Pick from book (tick questions):** chapter → exercise → tick questions (or type numbers "1-5, 8", Tick all), only the section's type can be ticked. Custom questions: **Also save to Question Bank**; ✏️ Edit / ✕ Remove labelled.
+- Book questions keep the **printed order** (items saved 1 ms apart; list ordered by chapter + createdAt) — "question no. 3" now really is question 3. Existing books: press ♻️ Re-read questions once.
+- **Question Bank:** 📚 Full book and 📋 Smart Syllabus views (all their chapters' questions), type filter + search, ✏️ Edit, **✍️ Add questions → paste many at once** (numbered, (a)(b)(c)(d), answer with `*` or `Ans: b`), 📘 Copy chapters from Book Library.
+- Files: `lib/edition.ts`, `lib/pdfStore.ts`, `lib/pdfText.ts`, `lib/bookParse.ts`, `components/{PaperBuilder,QuestionBank,BookUploader,BookViewer,Footer}.tsx`, `app/api/books/[id]/{pages,items,structure}/route.ts`, `prisma/schema.prisma`.
+- Not in this version: offline mode with sync (planned next).
+
+## What's new (v1.7.1) — Test scope fixed (New Paper)
+
+- **Test scope now drives the chapters:** Full Book / 1st–2nd Half / Quarters / Smart Syllabus tick exactly the chapters they cover (book and question bank), shown ticked and locked, so ticking a box can no longer silently switch the scope to Custom. Changing the scope picks the paper's questions again from those chapters (teacher-written custom questions stay).
+- **Custom — choose chapters yourself:** starts from the chapters the previous scope covered; every tick/untick re-picks the questions from the ticked chapters.
+- Edit keeps custom chapters even after the book was ♻️ re-read (chapters get new IDs; saved by chapter number too: `buildOptions.bookChapterNumbers`).
+- **↻ Refresh questions** also reloads the book's chapters (new Smart Syllabus marks). Slow answers for old chapter choices are ignored (questions from un-ticked chapters could appear).
+- Warning under the chapters when the chosen chapters have no questions (e.g. a scanned book saved without OCR → 📘 Re-read from PDF (OCR)).
+- Files: `components/PaperBuilder.tsx`, `lib/scope.ts` (label), `lib/schemas.ts` (`bookChapterNumbers`).
+
 ## What's new (v1.7) — auto-questions fixed, free OCR (English + Urdu), smarter cleaning
 
 - **Auto-questions fixed:** numbered questions / MCQs with no "Exercise" heading above them are no longer skipped — they go into a **"General Questions"** exercise of that chapter (numbered chapter statements such as "1. Simplex mode allows …" are not taken as questions). Urdu headings (`مشق`, `جوابات`) now match (JS `\b` never matched after Urdu letters). A save can no longer fail on one odd line (NUL characters, over-long options, empty chapter title, >100 exercises) — `structurePayload()` in `lib/bookParse.ts` clips everything to the API limits. Errors are shown instead of failing silently. After ♻️ Re-read the viewer stays on the same chapter (chapters get new IDs — before, the page showed 0 questions until reload).

@@ -7,8 +7,9 @@
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { STANDARD_CLASSES } from "@/lib/curriculum";
-import { detectChapterStarts, generateFromText, parseBook, structurePayload, type ChapterStart, type ParsedChapter, type RawPage } from "@/lib/bookParse";
-import { ocrLangFor, readPdfPages, type OcrMode } from "@/lib/pdfText";
+import { detectChapterStarts, forParsing, generateFromText, parseBook, structurePayload, type ChapterStart, type ParsedChapter, type RawPage } from "@/lib/bookParse";
+import { ocrLangFor, ocrWorkerCount, readPdfPages, type OcrMode } from "@/lib/pdfText";
+import { savePdf } from "@/lib/pdfStore";
 import { api } from "./useCatalog";
 import { LEVEL_LABEL, QTYPE_SHORT, type Level } from "@/lib/types";
 
@@ -20,11 +21,13 @@ const BOARDS = [
 export default function BookUploader({ isSuper }: { isSuper: boolean }) {
   const router = useRouter();
   const [meta, setMeta] = useState({ className: "9th", subjectName: "", title: "", board: BOARDS[0], edition: "", language: "en" as "en" | "ur", shared: isSuper });
-  const [ocr, setOcr] = useState<"auto" | "off">("auto");
-  const [forceOcr, setForceOcr] = useState(false);
+  const [ocr, setOcr] = useState<"smart" | "all" | "off">("smart");
+  const [forceOcr, setForceOcr] = useState(false); // every page with OCR
+  const [mixed, setMixed] = useState(false); // English + Urdu model (slower)
+  const fileRef = useRef<File | null>(null);
   const [autoGen, setAutoGen] = useState(true);
-  const [pages, setPages] = useState<(RawPage & { ocr?: boolean })[]>([]);
-  const [readInfo, setReadInfo] = useState<{ ocrPages: number; ocrError: string; stopped: boolean } | null>(null);
+  const [pages, setPages] = useState<(RawPage & { ocr?: boolean; ocrLevel?: 0 | 1 | 2 })[]>([]);
+  const [readInfo, setReadInfo] = useState<{ ocrPages: number; quickPages: number; ocrError: string; stopped: boolean } | null>(null);
   const [starts, setStarts] = useState<ChapterStart[]>([]);
   const [chapters, setChapters] = useState<ParsedChapter[]>([]);
   const [progress, setProgress] = useState<{ done: number; total: number; msg: string } | null>(null);
@@ -34,7 +37,7 @@ export default function BookUploader({ isSuper }: { isSuper: boolean }) {
 
   const std = STANDARD_CLASSES.find((c) => c.name === meta.className);
   const level: Level = std?.level ?? "MATRIC";
-  const emptyPages = pages.filter((p) => p.text.replace(/\s/g, "").length < 30).length;
+  const emptyPages = pages.filter((p) => p.ocrLevel !== 1 && p.text.replace(/\s/g, "").length < 30).length;
   const totals = useMemo(() => ({
     exercises: chapters.reduce((a, c) => a + c.exercises.length, 0),
     items: chapters.reduce((a, c) => a + c.exercises.reduce((b, e) => b + e.items.length, 0), 0),
@@ -46,13 +49,15 @@ export default function BookUploader({ isSuper }: { isSuper: boolean }) {
     setErr("");
     cancel.current = false;
     try {
-      const mode: OcrMode = forceOcr ? "force" : ocr;
-      const r = await readPdfPages(file, { mode, lang: ocrLangFor(meta.language), onProgress: setProgress, stopped: () => cancel.current });
-      setReadInfo({ ocrPages: r.ocrPages, ocrError: r.ocrError, stopped: r.stopped });
+      const mode: OcrMode = ocr;
+      fileRef.current = file;
+      const r = await readPdfPages(file, { mode, everyPage: forceOcr, lang: ocrLangFor(meta.language, mixed), onProgress: setProgress, stopped: () => cancel.current });
+      setReadInfo({ ocrPages: r.ocrPages, quickPages: r.quickPages, ocrError: r.ocrError, stopped: r.stopped });
       setPages(r.pages);
+      // chapters from every page (quick heading scans included); questions only from fully read pages
       const s = detectChapterStarts(r.pages);
       setStarts(s);
-      setChapters(parseBook(r.pages, s.length ? s : undefined));
+      setChapters(parseBook(forParsing(r.pages), s.length ? s : undefined));
       if (!meta.title) setMeta((m) => ({ ...m, title: file.name.replace(/\.pdf$/i, "").replace(/[_-]+/g, " ") }));
     } catch (e) {
       setErr(`Could not read this PDF: ${(e as Error)?.message || e}`);
@@ -61,7 +66,7 @@ export default function BookUploader({ isSuper }: { isSuper: boolean }) {
     }
   }
 
-  const reparse = (s: ChapterStart[]) => { setStarts(s); setChapters(parseBook(pages, s.length ? s : undefined)); };
+  const reparse = (s: ChapterStart[]) => { setStarts(s); setChapters(parseBook(forParsing(pages), s.length ? s : undefined)); };
 
   async function save() {
     setErr("");
@@ -75,17 +80,18 @@ export default function BookUploader({ isSuper }: { isSuper: boolean }) {
       });
       for (let i = 0; i < pages.length; i += 25) {
         setProgress({ done: i, total: pages.length, msg: `Saving pages ${i + 1}–${Math.min(i + 25, pages.length)}…` });
-        await api(`/api/books/${id}/pages`, "POST", { replace: i === 0, pages: pages.slice(i, i + 25).map((p) => ({ pageNo: p.pageNo, text: p.text.slice(0, 60000), ocr: !!p.ocr })) });
+        await api(`/api/books/${id}/pages`, "POST", { replace: i === 0, pages: pages.slice(i, i + 25).map((p) => ({ pageNo: p.pageNo, text: p.text.slice(0, 60000), ocr: !!p.ocr, ocrLevel: p.ocrLevel ?? 0 })) });
       }
       setProgress({ done: pages.length, total: pages.length, msg: "Saving chapters, exercises and questions…" });
-      const outline = chapters.length ? chapters : parseBook(pages); // never save an empty outline
+      if (fileRef.current) await savePdf(id, fileRef.current); // for chapter-by-chapter OCR in Book Library (stays in this browser)
+      const outline = chapters.length ? chapters : parseBook(forParsing(pages)); // never save an empty outline
       await api(`/api/books/${id}/structure`, "PUT", { chapters: structurePayload(outline) });
       // Chapters without exercise questions: free "Define / Fill in the blank / True-False" questions from their text
       if (autoGen && outline.some((c) => !c.exercises.length)) {
         setProgress({ done: pages.length, total: pages.length, msg: "Auto-generating questions for chapters without an exercise…" });
         const saved = await api<{ chapters: { id: string; number: number; startPage: number; endPage: number; _count: { items: number } }[] }>(`/api/books/${id}`, "GET");
         for (const c of saved.chapters.filter((x) => x._count.items === 0)) {
-          const gen = generateFromText(pages, c, 30);
+          const gen = generateFromText(forParsing(pages), c, 30);
           if (gen.length) {
             await api(`/api/books/${id}/items`, "POST", {
               chapterId: c.id, source: "GENERATED",
@@ -94,7 +100,8 @@ export default function BookUploader({ isSuper }: { isSuper: boolean }) {
           }
         }
       }
-      router.push(`/dashboard/library/${id}`);
+      // scanned pages still to read → Book Library starts reading them chapter by chapter
+      router.push(`/dashboard/library/${id}${pages.some((p) => p.ocrLevel === 1) ? "?ocr=1" : ""}`);
     } catch (e) {
       setErr((e as Error).message);
       setProgress(null);
@@ -133,21 +140,25 @@ export default function BookUploader({ isSuper }: { isSuper: boolean }) {
       <div className="card">
         <h2>2. Textbook or syllabus PDF</h2>
         <div className="row">
-          <div style={{ width: 260 }}>
+          <div style={{ width: 330 }}>
             <label>Scanned / Urdu (InPage) pages</label>
             <select value={ocr} disabled={!!progress} onChange={(e) => setOcr(e.target.value as typeof ocr)}>
-              <option value="auto" title="Only pages without readable text are read with OCR">Auto OCR (recommended)</option>
+              <option value="smart">Smart OCR — find chapters now, questions chapter by chapter (recommended)</option>
+              <option value="all">Read every scanned page now (slow for big books)</option>
               <option value="off">No OCR (fastest)</option>
             </select>
           </div>
-          <label className="check" title="Use for Urdu or mixed books whose text looks fine in the PDF but comes out wrong. Slow: every page is read as an image.">
-            <input type="checkbox" checked={forceOcr} disabled={!!progress} onChange={(e) => setForceOcr(e.target.checked)} /> Force OCR (English + Urdu) on every page
+          <label className="check" title="For Urdu or mixed books whose text looks fine in the PDF but comes out wrong: every page is read as an image.">
+            <input type="checkbox" checked={forceOcr} disabled={!!progress || ocr === "off"} onChange={(e) => setForceOcr(e.target.checked)} /> Force OCR on every page
+          </label>
+          <label className="check" title="Book has both English and Urdu text. Reading both languages is about 2× slower.">
+            <input type="checkbox" checked={mixed} disabled={!!progress || ocr === "off"} onChange={(e) => setMixed(e.target.checked)} /> English + Urdu book
           </label>
           <label className="btn" style={{ margin: 0, color: "#fff" }}>
             📘 Choose PDF
             <input type="file" hidden accept="application/pdf" disabled={!!progress} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) readPdf(f); }} />
           </label>
-          <span className="small muted">Read inside your browser — the PDF is not uploaded, only its text. OCR is free (tesseract.js) and runs on this computer.</span>
+          <span className="small muted">Read inside your browser — the PDF is not uploaded, only its text. Free OCR runs on this computer, {ocrWorkerCount()} page(s) at a time.</span>
         </div>
         {progress && (
           <div className="alert ok" style={{ marginTop: 10 }}>
@@ -160,7 +171,8 @@ export default function BookUploader({ isSuper }: { isSuper: boolean }) {
           <p className="small" style={{ marginTop: 10 }}>
             <b>{pages.length}</b> pages read
             {readInfo && readInfo.ocrPages > 0 && <> · <b>{readInfo.ocrPages}</b> read with OCR</>}
-            {" · "}{emptyPages > 0 ? <span style={{ color: "var(--warn)" }}>{emptyPages} pages still have no text{ocr === "off" && !forceOcr ? " — choose Auto OCR and pick the PDF again" : " (pictures only)"}; add those questions manually later.</span> : "all pages have text ✔"}
+            {readInfo && readInfo.quickPages > 0 && <> · <b>{readInfo.quickPages}</b> scanned pages: chapters found ✔ — their questions are read <b>chapter by chapter in Book Library</b> right after you save (you can use each chapter as soon as it is done)</>}
+            {" · "}{emptyPages > 0 ? <span style={{ color: "var(--warn)" }}>{emptyPages} pages still have no text{ocr === "off" ? " — choose Smart OCR and pick the PDF again" : " (pictures only)"}; add those questions manually later.</span> : "all pages have text ✔"}
             {readInfo?.stopped && <span style={{ color: "var(--warn)" }}> · stopped early — only the pages read so far will be saved</span>}
             {readInfo?.ocrError && <span style={{ color: "var(--danger, #b42318)" }}> · OCR could not run: {readInfo.ocrError}</span>}
           </p>

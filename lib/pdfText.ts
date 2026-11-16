@@ -118,21 +118,52 @@ export async function createOcr(lang: string, onProgress?: (fraction: number) =>
   return worker as unknown as OcrWorker;
 }
 
-/** Renders the page at ~250 DPI on a white canvas and reads it with OCR; noise-only lines are dropped. */
-export async function ocrPage(page: PDFPageProxy, worker: OcrWorker): Promise<string> {
+/** How many OCR workers this computer can run side by side (one core is left for the page itself). */
+export const ocrWorkerCount = () => Math.max(1, Math.min(4, ((typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 2) - 1));
+
+/**
+ * Several OCR workers sharing one queue: pages are read side by side (≈ 2× faster with 2 workers, 3× with 3 …).
+ * Workers start one by one, so the first page begins as soon as the first worker is ready.
+ */
+export async function createOcrPool(lang: string, workers = ocrWorkerCount()) {
+  const T = await import("tesseract.js");
+  const scheduler = T.createScheduler();
+  const first = await T.createWorker(lang, 1);
+  await first.setParameters({ preserve_interword_spaces: "1" });
+  scheduler.addWorker(first);
+  const more = (async () => {
+    for (let i = 1; i < workers; i++) {
+      const w = await T.createWorker(lang, 1);
+      await w.setParameters({ preserve_interword_spaces: "1" });
+      scheduler.addWorker(w);
+    }
+  })().catch(() => undefined); // extra workers are a bonus; one is enough to work
+  return {
+    size: workers,
+    recognize: async (c: HTMLCanvasElement) => (await scheduler.addJob("recognize", c)) as unknown as { data: { text: string } },
+    terminate: async () => { await more; await scheduler.terminate(); },
+  };
+}
+export type OcrPool = Awaited<ReturnType<typeof createOcrPool>>;
+
+/** White canvas of the page at `width` px; `topPart` < 1 keeps only the top of the page (where chapter headings are). */
+async function renderForOcr(page: PDFPageProxy, width: number, topPart = 1) {
   const vp0 = page.getViewport({ scale: 1 });
-  const scale = Math.min(2200 / vp0.width, 3200 / vp0.height, 4);
+  const scale = Math.min(width / vp0.width, 3200 / vp0.height, 4);
   const vp = page.getViewport({ scale });
   const c = document.createElement("canvas");
   c.width = Math.round(vp.width);
-  c.height = Math.round(vp.height);
+  c.height = Math.round(vp.height * topPart);
   const ctx = c.getContext("2d")!;
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, c.width, c.height);
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  const { data } = await worker.recognize(c);
-  c.width = c.height = 0; // free memory on big books
-  return data.text
+  await page.render({ canvasContext: ctx, viewport: vp }).promise; // drawing past the canvas edge is simply cut off
+  return c;
+}
+
+/** OCR text → clean lines (noise-only lines dropped, stray Urdu glyphs removed from English lines). */
+function cleanOcrText(text: string) {
+  return text
     .split(/\n+/)
     .map((l) => fixChars(l).replace(/\s+/g, " ").trim())
     // English line with a stray Urdu glyph from the mixed model ("Hard disk(ء") → drop the glyph
@@ -141,61 +172,120 @@ export async function ocrPage(page: PDFPageProxy, worker: OcrWorker): Promise<st
     .join("\n");
 }
 
-export type OcrMode = "off" | "auto" | "force";
-export type PdfProgress = { done: number; total: number; msg: string };
-export interface ReadResult { pages: (RawPage & { ocr: boolean })[]; ocrPages: number; emptyPages: number; stopped: boolean; ocrError: string }
+/** Renders the page at ~220 DPI and reads it with OCR (one page, one worker — the question-bank extractor). */
+export async function ocrPage(page: PDFPageProxy, worker: OcrWorker | OcrPool): Promise<string> {
+  const c = await renderForOcr(page, 1900);
+  const { data } = await worker.recognize(c);
+  c.width = c.height = 0; // free memory on big books
+  return cleanOcrText(data.text);
+}
 
-/** OCR language for a book: its own language first, the other one second (covers mixed English/Urdu pages). */
-export const ocrLangFor = (bookLanguage: string) => (bookLanguage === "ur" ? "urd+eng" : "eng+urd");
+/** "quick" = top 35 % of the page (chapter headings, ~5× faster) · "full" = the whole page. */
+export type OcrPart = "quick" | "full";
 
 /**
- * Reads every page of a PDF file in the browser.
- *  - mode "auto": OCR only pages with no usable text (scanned, InPage Urdu, broken fonts)
- *  - mode "force": OCR every page (mixed Urdu/English books whose text looks fine but reads wrong)
+ * OCR of many pages of an open PDF, as many at a time as the pool has workers.
+ * onPage is called as each page finishes (pages may finish out of order).
  */
+export async function ocrPdfPages(
+  doc: { getPage: (n: number) => Promise<PDFPageProxy> },
+  pageNos: number[],
+  opts: { pool: OcrPool; part: OcrPart; stopped: () => boolean; onPage: (pageNo: number, text: string, done: number) => void },
+) {
+  let next = 0, done = 0;
+  const lane = async () => {
+    while (next < pageNos.length && !opts.stopped()) {
+      const n = pageNos[next++];
+      const page = await doc.getPage(n);
+      const c = await renderForOcr(page, 1900, opts.part === "quick" ? 0.35 : 1);
+      page.cleanup();
+      const { data } = await opts.pool.recognize(c);
+      c.width = c.height = 0;
+      opts.onPage(n, cleanOcrText(data.text), ++done);
+      await new Promise((r) => setTimeout(r, 0)); // keep the page responsive
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(opts.pool.size, pageNos.length)) }, lane));
+}
+
+/**
+ * "off" = PDF text only · "smart" = PDF text + a quick heading scan of scanned pages (chapters are found in minutes,
+ * questions are then read chapter by chapter in Book Library) · "all" = full OCR of every scanned page now (slow).
+ * Old names: "auto" = "all", "force" = "all" for every page.
+ */
+export type OcrMode = "off" | "smart" | "all" | "auto" | "force";
+export type PdfProgress = { done: number; total: number; msg: string };
+export type ReadPage = RawPage & { ocr: boolean; ocrLevel: 0 | 1 | 2 };
+export interface ReadResult { pages: ReadPage[]; ocrPages: number; quickPages: number; emptyPages: number; stopped: boolean; ocrError: string }
+
+/** OCR language: the book's own language only (≈ 2× faster); "mixed" adds the other one for English + Urdu books. */
+export const ocrLangFor = (bookLanguage: string, mixed = false) => (bookLanguage === "ur" ? (mixed ? "urd+eng" : "urd") : mixed ? "eng+urd" : "eng");
+const langName = (lang: string) => lang.split("+").map((l) => (l === "urd" ? "Urdu" : "English")).join(" + ");
+
+/** Reads every page of a PDF file in the browser (see OcrMode). `everyPage` treats every page as scanned. */
 export async function readPdfPages(
   file: File,
-  opts: { mode: OcrMode; lang: string; onProgress: (p: PdfProgress) => void; stopped: () => boolean },
+  opts: { mode: OcrMode; lang: string; everyPage?: boolean; onProgress: (p: PdfProgress) => void; stopped: () => boolean },
 ): Promise<ReadResult> {
+  const mode = opts.mode === "auto" || opts.mode === "force" ? "all" : opts.mode;
+  const everyPage = opts.everyPage || opts.mode === "force";
   const pdfjs = await loadPdfJs();
   const doc = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
   const total = doc.numPages;
-  const pages: ReadResult["pages"] = [];
-  let worker: OcrWorker | null = null;
-  let ocrPages = 0, emptyPages = 0, ocrError = "";
+  const pages: ReadPage[] = [];
+  const need: number[] = [];
+  let ocrPages = 0, quickPages = 0, ocrError = "";
   let stopped = false;
   try {
+    // 1. the PDF's own text — a second or two for the whole book
     for (let n = 1; n <= total; n++) {
       if (opts.stopped()) { stopped = true; break; }
-      opts.onProgress({ done: n - 1, total, msg: `Reading page ${n} of ${total}…` });
+      if (n % 10 === 1) opts.onProgress({ done: n - 1, total, msg: `Reading page ${n} of ${total}…` });
       const p = await doc.getPage(n);
-      let text = await pageText(p);
-      let usedOcr = false;
-      const q = textQuality(text);
-      if (opts.mode === "force" || (opts.mode === "auto" && !q.ok)) {
-        try {
-          if (!worker) {
-            opts.onProgress({ done: n - 1, total, msg: `Loading free OCR engine (${opts.lang.replace("+", " + ").replace("eng", "English").replace("urd", "Urdu")})… first time takes a minute` });
-            worker = await createOcr(opts.lang, (f) => opts.onProgress({ done: n - 1 + f, total, msg: `OCR scanning page ${n} of ${total}… ${Math.round(f * 100)}%` }));
-          }
-          opts.onProgress({ done: n - 1, total, msg: `OCR scanning page ${n} of ${total}…` });
-          const read = await ocrPage(p, worker);
-          // keep the PDF's own text if OCR found less on a page that was only "suspicious"
-          if (opts.mode === "force" || q.reason !== "" || textQuality(read).meaningful >= q.meaningful) { text = read; usedOcr = true; }
-        } catch (e) {
-          ocrError = (e as Error)?.message || "OCR could not start (check the internet connection)";
-          opts.mode = "off"; // don't retry on every page
-        }
-      }
-      if (usedOcr) ocrPages++;
-      if (!textQuality(text).ok && textQuality(text).reason === "empty") emptyPages++;
-      pages.push({ pageNo: n, text, ocr: usedOcr });
+      const text = await pageText(p);
       p.cleanup();
-      await new Promise((r) => setTimeout(r, 0)); // keep the page responsive
+      pages.push({ pageNo: n, text, ocr: false, ocrLevel: 0 });
+      if (mode !== "off" && (everyPage || !textQuality(text).ok)) need.push(n);
+      if (n % 20 === 0) await new Promise((r) => setTimeout(r, 0));
+    }
+    // 2. OCR of scanned / garbled pages, several at a time
+    if (need.length && !stopped) {
+      const part: OcrPart = mode === "smart" ? "quick" : "full";
+      let pool: OcrPool | null = null;
+      try {
+        opts.onProgress({ done: 0, total: need.length, msg: `Loading free OCR engine (${langName(opts.lang)}, ${ocrWorkerCount()} at a time)… first time takes a minute` });
+        pool = await createOcrPool(opts.lang);
+        const t0 = Date.now();
+        await ocrPdfPages(doc, need, {
+          pool, part, stopped: opts.stopped,
+          onPage: (n, text, done) => {
+            const pg = pages[n - 1];
+            const before = textQuality(pg.text);
+            // keep the PDF's own text when OCR found less on a page that only looked suspicious
+            if (everyPage || !before.ok || textQuality(text).meaningful >= before.meaningful) {
+              pages[n - 1] = { pageNo: n, text, ocr: true, ocrLevel: part === "quick" ? 1 : 2 };
+              if (part === "quick") quickPages++; else ocrPages++;
+            }
+            const left = Math.round(((Date.now() - t0) / done) * (need.length - done) / 1000);
+            opts.onProgress({ done, total: need.length, msg: `${part === "quick" ? "Finding chapters — quick scan of" : "OCR scanning"} page ${done} of ${need.length}${done >= 3 ? ` · about ${left < 90 ? `${left} s` : `${Math.round(left / 60)} min`} left` : ""}…` });
+          },
+        });
+        if (opts.stopped()) stopped = true;
+      } catch (e) {
+        ocrError = (e as Error)?.message || "OCR could not start (check the internet connection)";
+      } finally {
+        await pool?.terminate().catch(() => undefined);
+      }
     }
   } finally {
-    await worker?.terminate().catch(() => undefined);
     await doc.destroy().catch(() => undefined);
   }
-  return { pages, ocrPages, emptyPages, stopped, ocrError };
+  const emptyPages = pages.filter((p) => p.ocrLevel !== 1 && textQuality(p.text).reason === "empty").length;
+  return { pages, ocrPages, quickPages, emptyPages, stopped, ocrError };
+}
+
+/** Opens a PDF file for chapter-by-chapter OCR (Book Library). */
+export async function openPdf(file: Blob) {
+  const pdfjs = await loadPdfJs();
+  return pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
 }

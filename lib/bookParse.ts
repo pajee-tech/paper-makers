@@ -242,7 +242,9 @@ export function cleanPages(pages: RawPage[]): RawPage[] {
   // count on the cleaned lines, so a footer counts the same whether or not its watermark/page number was removed
   const count = new Map<string, number>();
   for (const p of done) for (const k of new Set(p.ls.map(footerKey))) count.set(k, (count.get(k) ?? 0) + 1);
-  const minRepeat = Math.max(4, Math.ceil(pages.length * 0.25));
+  // count only pages that have text: after a Smart OCR upload many pages are still empty (read chapter by chapter later)
+  const withText = done.filter((p) => p.ls.length).length;
+  const minRepeat = withText >= 3 && withText < 16 ? 3 : Math.max(4, Math.ceil(withText * 0.25));
   return done.map((p) => ({
     pageNo: p.pageNo,
     text: p.ls.filter((l) => STRUCTURAL(l) || l.length > 90 || (count.get(footerKey(l)) ?? 0) < minRepeat).join("\n"),
@@ -529,6 +531,28 @@ export function parseBook(rawPages: RawPage[], starts?: ChapterStart[]): ParsedC
     return ch;
   });
 }
+
+/**
+ * Exercise headings on a page: "start" = "EXERCISE" / "Review Questions" / "مشق" (where an exercise begins),
+ * "section" = a question-type heading ("B. Short Questions", "Multiple Choice Questions") that can sit inside one.
+ */
+export function exerciseHeadingOf(text: string): "start" | "section" | null {
+  let found: "start" | "section" | null = null;
+  for (const raw of text.split(/\n+/)) {
+    const l = cleanLine(raw);
+    if (!l || l.length > 70) continue;
+    if (EXERCISE_EN.test(l) || EXERCISE_UR.test(toAscii(l))) return "start";
+    if (!!hintOf(l) && l.length < 60 && !/[?؟]$/.test(l)) found = "section";
+  }
+  return found;
+}
+export const hasExerciseHeading = (text: string) => exerciseHeadingOf(text) != null;
+
+/**
+ * Pages whose text is only a quick heading scan (ocrLevel 1: the top of a scanned page) are used to find chapters,
+ * never to read questions — their questions would be cut off half-way.
+ */
+export const forParsing = <T extends RawPage & { ocrLevel?: number | null }>(pages: T[]): T[] => pages.map((p) => (p.ocrLevel === 1 ? { ...p, text: "" } : p));
 
 /* --------------------- payload for PUT /api/books/:id/structure --------------------- */
 const clip = (s: string | null | undefined, n: number) => (s == null ? null : fixChars(String(s)).slice(0, n));

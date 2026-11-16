@@ -1,7 +1,7 @@
 # PaperMaker PK — Project Handoff & Full Conversation History
 
 > **Purpose:** paste this file (plus the code zip) into any AI model or give it to a developer to continue the project exactly where it stopped.
-> **State as of:** 16 Nov 2026 · latest version **v1.7** · owner: **Shahzaib Hussain** · company: **Pajee Technologies**
+> **State as of:** 16 Nov 2026 · latest version **v1.8** (full + testing edition) · owner: **Shahzaib Hussain** · company: **Pajee Technologies**
 > **Live site (user's deployment):** `https://paper-makers-jade.vercel.app`
 
 ---
@@ -133,6 +133,16 @@ Asked (change only these): fix e-book auto-questions not adding; questions witho
 Root causes found by testing (synthetic English/Urdu/scanned/rotated PDFs through pdf.js, then the real app on PGlite + Playwright): `if (!ex) continue` skipped every question without an Exercise heading; Urdu `\b` never matched (`مشق`, `جوابات`); pdf.js word pieces joined with spaces ("De fi ne"); v1.6 footer counting compared raw vs cleaned lines (footer glued to last option); v1.6 rotated-text filter dropped all text of pages drawn rotated; after Re-read the viewer kept the old chapter ID (empty page); NUL chars / >100 exercises / empty title could fail the whole save; Chrome/InPage Urdu PDFs give garbled glyph text.
 Done: see README v1.7. New UI: uploader "Auto OCR (recommended) / No OCR" + "Force OCR (English + Urdu)" + "Auto-generate questions for chapters without an exercise"; Book Library "📘 Re-read from PDF (OCR)"; extractor "Auto OCR" + "🔍 Force OCR". API: structure route strips NUL, allows 300 exercises/chapter, second ID-reuse key (text without spaces/watermarks). Extractor auto-detect no longer pre-selects option (a).
 
+### Request 13 — Test scope (v1.7.1) — "only this issue, no new issue"
+Reported: choosing Full Book, the scope jumped to Custom chapters; scopes must select their chapters (1st half → only 1st-half chapters' questions); Custom must let them pick chapters from the e-book/bank and auto-add questions; "worked before".
+Causes: ticking any chapter box switched scope to CUSTOM; Full Book showed no ticks ("none = whole book"); scope change didn't re-pick questions; saved custom chapter IDs broke after a book re-read; ↻ Refresh didn't reload the outline (new ALP marks); out-of-order pool responses could keep old chapters' questions. Their screenshot's book had 1 "Full book" chapter with 0 questions (scanned PDF saved without OCR) → told to use 📘 Re-read from PDF (OCR).
+Done in `PaperBuilder.tsx` only (+ label in `lib/scope.ts`, `bookChapterNumbers` in `lib/schemas.ts`). Tested every scope, custom ticks, Edit, Edit after re-read, Smart Syllabus — 3 runs.
+
+### Request 14 — Fast OCR, book picker, easy Question Bank, testing edition (v1.8)
+Reported: OCR took hours for 1–2 chapters and gave 0 questions; New Paper still went Custom / 0 questions / Auto-pick button "not visible"; wanted custom question add/edit/delete in New Paper, simpler Question Bank with Full book + Smart Syllabus, a launch/testing edition (book upload + easy manual picking of exercise questions, no e-book auto-select, no Smart Syllabus switch), the full edition, and an offline version that syncs over the internet when wanted.
+Measured (2-core sandbox): dense page OCR 7–9 s; Urdu-only model ~2× faster than eng+urd; 2 workers ~1.9×; top-35 % strip ~5× faster than a full page. Found: Auto-pick button is disabled when the pool is empty and the sticky bar covered it; "Add by number" used positions and book items had no stable order (createMany = same createdAt).
+Done: see README v1.8. Scope→Custom could only come from old saved papers or an old deployment → footer version label added. Offline + sync NOT built yet (agreed as next phase: offline-first PWA with IndexedDB + sync queue).
+
 ---
 
 ## 8. Known limitations / honest notes
@@ -177,6 +187,8 @@ Prisma engine binaries (binaries.prisma.sh) were blocked in the assistant's sand
 - For local npm installs, temporarily swap the `xlsx` CDN URL to `0.18.5` if the CDN is blocked, and restore it before zipping.
 
 ## 10. Ideas the user may ask for next (not built)
+
+- **Offline + sync (requested, next phase):** work without internet, sync data when online.
 
 - Automatic JazzCash/EasyPaisa payment confirmation (needs merchant API).
 - Official Smart Syllabus lists preloaded per book (currently marked by hand).

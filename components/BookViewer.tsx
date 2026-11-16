@@ -7,8 +7,11 @@ import QuestionForm, { cleanDraft, emptyDraft, type DraftQuestion } from "./Ques
 import { detectQuestions } from "./PdfBookPaperExtractor";
 import { api } from "./useCatalog";
 import { cachedGet } from "@/lib/clientCache";
-import { generateFromText, parseBook, parseNumberList, structurePayload, type ParsedItem } from "@/lib/bookParse";
-import { ocrLangFor, readPdfPages } from "@/lib/pdfText";
+import { exerciseHeadingOf, forParsing, generateFromText, parseBook, parseNumberList, structurePayload, type ParsedItem } from "@/lib/bookParse";
+import { createOcrPool, ocrLangFor, ocrPdfPages, ocrWorkerCount, openPdf, readPdfPages, type OcrPool } from "@/lib/pdfText";
+import { loadPdf, savePdf } from "@/lib/pdfStore";
+import { useSearchParams } from "next/navigation";
+import { FEATURES } from "@/lib/edition";
 import { QTYPE_LABEL, type QType } from "@/lib/types";
 
 export interface BookMeta { id: string; title: string; board?: string | null; edition?: string | null; className: string; subjectName: string; language: string; pageCount: number; shared: boolean; canEdit: boolean }
@@ -69,38 +72,47 @@ export default function BookViewer({ bookId }: { bookId: string }) {
     }
   }
 
+  /** Reads the saved page text again and saves the book's questions (IDs used in papers are kept). Returns the question count. */
+  async function rebuild(): Promise<number | null> {
+    if (!book) return null;
+    setMsg("Reading saved pages…");
+    const pages: { pageNo: number; text: string; ocrLevel?: number }[] = [];
+    for (let p = 1; p <= book.pageCount; p += 31) {
+      const d = await api<{ pages: { pageNo: number; text: string; ocrLevel?: number }[] }>(`/api/books/${bookId}/pages?from=${p}&to=${Math.min(book.pageCount, p + 30)}`, "GET");
+      pages.push(...d.pages);
+    }
+    if (!pages.length) return null;
+    const cur = chaptersRef.current;
+    const starts = cur.length ? cur.map((c) => ({ number: c.number, title: c.title, startPage: c.startPage })) : undefined;
+    const parsed = parseBook(forParsing(pages), starts);
+    setMsg("Saving questions…");
+    const r = await api<{ items: number }>(`/api/books/${bookId}/structure`, "PUT", {
+      keepExisting: true,
+      chapters: structurePayload(parsed, (n) => cur.find((x) => x.number === n)?.isAlp),
+    });
+    await refresh();
+    setMsg("");
+    return r.items;
+  }
+
   /** Re-reads every saved page with the latest reader (removes page numbers / footers, fixes split MCQ options). */
   async function reRead(fromPdf?: File) {
     if (!book) return;
     if (!fromPdf && !confirm("Re-read all questions of this book from its saved pages?\n\nTeacher-added and auto-generated questions, Smart Syllabus marks and questions already used in papers are kept.")) return;
     try {
-      let pages: { pageNo: number; text: string }[] = [];
       if (fromPdf) {
         // scanned / Urdu books: read the PDF again with OCR, then replace the saved page text
-        const r = await readPdfPages(fromPdf, { mode: "auto", lang: ocrLangFor(book.language), onProgress: (p) => setMsg(p.msg), stopped: () => false });
+        const r = await readPdfPages(fromPdf, { mode: "all", lang: ocrLangFor(book.language), onProgress: (p) => setMsg(p.msg), stopped: () => false });
         if (r.ocrError) setMsg(`OCR could not run: ${r.ocrError}`);
-        pages = r.pages;
+        await savePdf(bookId, fromPdf);
         setMsg("Saving page text…");
         for (let i = 0; i < r.pages.length; i += 25) {
-          await api(`/api/books/${bookId}/pages`, "POST", { replace: i === 0, pages: r.pages.slice(i, i + 25).map((p) => ({ pageNo: p.pageNo, text: p.text.slice(0, 60000), ocr: p.ocr })) });
-        }
-      } else {
-        setMsg("Reading saved pages…");
-        for (let p = 1; p <= book.pageCount; p += 31) {
-          const d = await api<{ pages: { pageNo: number; text: string }[] }>(`/api/books/${bookId}/pages?from=${p}&to=${Math.min(book.pageCount, p + 30)}`, "GET");
-          pages.push(...d.pages);
+          await api(`/api/books/${bookId}/pages`, "POST", { replace: i === 0, pages: r.pages.slice(i, i + 25).map((p) => ({ pageNo: p.pageNo, text: p.text.slice(0, 60000), ocr: p.ocr, ocrLevel: p.ocrLevel })) });
         }
       }
-      if (!pages.length) return setMsg("This book has no saved page text to read.");
-      const starts = chapters.length ? chapters.map((c) => ({ number: c.number, title: c.title, startPage: c.startPage })) : undefined;
-      const parsed = parseBook(pages, starts);
-      setMsg("Saving questions…");
-      const r = await api<{ items: number }>(`/api/books/${bookId}/structure`, "PUT", {
-        keepExisting: true,
-        chapters: structurePayload(parsed, (n) => chapters.find((x) => x.number === n)?.isAlp),
-      });
-      await refresh();
-      flash(`Re-read complete ✔ ${r.items} questions.`);
+      const n = await rebuild();
+      if (n == null) return setMsg("This book has no saved page text to read.");
+      flash(`Re-read complete ✔ ${n} questions.`);
     } catch (e) {
       setMsg(`Re-read failed: ${(e as Error).message}`);
     }
@@ -148,7 +160,7 @@ export default function BookViewer({ bookId }: { bookId: string }) {
         </div>
         <span className="spacer" />
         <a className="btn btn-ghost" href="/dashboard/library">← Library</a>
-        {book.canEdit && <button className="btn-ghost" title="Mark which chapters are in the Smart Syllabus" onClick={setSmartSyllabus}>📋 Smart Syllabus chapters</button>}
+        {book.canEdit && FEATURES.smartSyllabus && <button className="btn-ghost" title="Mark which chapters are in the Smart Syllabus" onClick={setSmartSyllabus}>📋 Smart Syllabus chapters</button>}
         {book.canEdit && <button className="btn-ghost" title="Re-read questions with the improved reader" onClick={() => reRead()}>♻️ Re-read questions</button>}
         {book.canEdit && (
           <label className="btn btn-ghost" style={{ margin: 0 }} title="Scanned or Urdu (InPage) book? Choose the same PDF again: pages without readable text are read with free OCR (English + Urdu). Question IDs used in papers are kept.">
@@ -159,6 +171,7 @@ export default function BookViewer({ bookId }: { bookId: string }) {
         {book.canEdit && <button className="btn-danger" onClick={async () => { if (confirm("Delete this book, its pages and all its questions?")) { await api(`/api/books/${bookId}`, "DELETE"); router.push("/dashboard/library"); } }}>Delete book</button>}
       </div>
       {msg && <div className="alert">{msg}</div>}
+      {book.canEdit && <ChapterOcr bookId={bookId} language={book.language} chapters={chapters} current={ch} rebuild={rebuild} setMsg={setMsg} />}
 
       <div className="sidebar-layout" style={{ marginTop: 14 }}>
         <div className="card">
@@ -166,7 +179,7 @@ export default function BookViewer({ bookId }: { bookId: string }) {
           <ul className="list-plain">
             {chapters.map((c) => (
               <li key={c.id} className={`tree-item ${c.id === chId ? "active" : ""}`} onClick={() => { setChId(c.id); setEditing(null); }}>
-                {c.number}. {c.title} {c.isAlp && <span className="badge ok">ALP</span>}
+                {c.number}. {c.title} {c.isAlp && FEATURES.smartSyllabus && <span className="badge ok">ALP</span>}
                 <div className="small muted">p{c.startPage}–{c.endPage} · {c._count.items} Qs · {c.exercises.length} ex.</div>
               </li>
             ))}
@@ -180,7 +193,7 @@ export default function BookViewer({ bookId }: { bookId: string }) {
             <>
               <div className="row">
                 <h2 style={{ margin: 0 }}>Ch {ch.number}: {ch.title}</h2>
-                {book.canEdit && (
+                {book.canEdit && FEATURES.smartSyllabus && (
                   <button className={`btn-sm ${ch.isAlp ? "" : "btn-ghost"}`} title="Mark as Smart Syllabus / ALP chapter" onClick={async () => { await api(`/api/books/${bookId}`, "PATCH", { chapter: { id: ch.id, isAlp: !ch.isAlp } }); loadBook(); }}>
                     {ch.isAlp ? "✓ Smart Syllabus (ALP)" : "Mark as Smart Syllabus (ALP)"}
                   </button>
@@ -339,10 +352,10 @@ function Generator({ bookId, chapter, onAdd }: { bookId: string; chapter: BookCh
     try {
       const pages: { pageNo: number; text: string }[] = [];
       for (let p = chapter.startPage; p <= chapter.endPage; p += 31) {
-        const d = await cachedGet<{ pages: { pageNo: number; text: string }[] }>(`/api/books/${bookId}/pages?from=${p}&to=${Math.min(chapter.endPage, p + 30)}`);
+        const d = await cachedGet<{ pages: { pageNo: number; text: string; ocrLevel?: number }[] }>(`/api/books/${bookId}/pages?from=${p}&to=${Math.min(chapter.endPage, p + 30)}`);
         pages.push(...d.pages);
       }
-      const g = generateFromText(pages, chapter, 45);
+      const g = generateFromText(forParsing(pages), chapter, 45);
       setList(g);
       setKeep(new Set(g.map((x) => x.tempId)));
     } catch {
@@ -398,6 +411,192 @@ function BookSearch({ bookId, chapters, onOpen }: { bookId: string; chapters: Bo
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type PageLevel = { pageNo: number; ocrLevel: number; chars: number };
+
+/**
+ * Chapter-by-chapter OCR for scanned / Urdu books. The upload only did a quick heading scan (chapters found in
+ * minutes); here each chapter's exercise pages are read in full, several pages at a time, and that chapter's
+ * questions can be used as soon as it is done. The PDF comes from this browser (saved at upload) or is picked once.
+ */
+function ChapterOcr({ bookId, language, chapters, current, rebuild, setMsg }: {
+  bookId: string; language: string; chapters: BookChapterDTO[]; current?: BookChapterDTO;
+  rebuild: () => Promise<number | null>; setMsg: (m: string) => void;
+}) {
+  const params = useSearchParams();
+  const [levels, setLevels] = useState<PageLevel[] | null>(null);
+  const [run, setRun] = useState<{ label: string; done: number; total: number } | null>(null);
+  const [needFile, setNeedFile] = useState(false);
+  const [pagesInput, setPagesInput] = useState("");
+  const [mixed, setMixed] = useState(false);
+  const stop = useRef(false);
+  const started = useRef(false);
+  const docRef = useRef<Awaited<ReturnType<typeof openPdf>> | null>(null);
+  const poolRef = useRef<OcrPool | null>(null);
+  const waiting = useRef<{ list: BookChapterDTO[]; how: "exercise" | "all" | number[] } | null>(null);
+
+  const loadLevels = useCallback(async () => {
+    const d = await api<{ levels: PageLevel[] }>(`/api/books/${bookId}/pages?levels=1`, "GET");
+    setLevels(d.levels);
+  }, [bookId]);
+  useEffect(() => { loadLevels().catch(() => setLevels([])); }, [loadLevels]);
+  useEffect(() => () => { poolRef.current?.terminate().catch(() => undefined); docRef.current?.destroy().catch(() => undefined); }, []);
+
+  const needs = (l?: PageLevel) => !!l && (l.ocrLevel === 1 || (l.ocrLevel === 0 && l.chars < 30));
+  const levelOf = (n: number) => levels?.find((l) => l.pageNo === n);
+  const chapterNeeds = (c: BookChapterDTO) => (levels ?? []).filter((l) => l.pageNo >= c.startPage && l.pageNo <= c.endPage && needs(l));
+  const pending = chapters.filter((c) => chapterNeeds(c).length > 0);
+  const pendingPages = pending.reduce((a, c) => a + chapterNeeds(c).length, 0);
+
+  async function getDoc(file?: File) {
+    if (docRef.current && !file) return docRef.current;
+    const blob = file ?? (await loadPdf(bookId));
+    if (!blob) { setNeedFile(true); return null; }
+    if (file) await savePdf(bookId, file);
+    setNeedFile(false);
+    docRef.current = await openPdf(blob);
+    return docRef.current;
+  }
+  async function getPool() {
+    if (!poolRef.current) {
+      setRun({ label: `Loading free OCR engine (${ocrWorkerCount()} at a time)… first time takes a minute`, done: 0, total: 0 });
+      poolRef.current = await createOcrPool(ocrLangFor(language, mixed));
+    }
+    return poolRef.current;
+  }
+
+  async function ocrList(doc: NonNullable<typeof docRef.current>, pool: OcrPool, nums: number[], label: string) {
+    const out = new Map<number, string>();
+    const valid = nums.filter((n) => n >= 1 && n <= doc.numPages);
+    if (!valid.length) return out;
+    setRun({ label, done: 0, total: valid.length });
+    await ocrPdfPages(doc, valid, { pool, part: "full", stopped: () => stop.current, onPage: (n, t, done) => { out.set(n, t); setRun({ label, done, total: valid.length }); } });
+    return out;
+  }
+
+  /** OCR of one chapter. "exercise" = from its last page backwards until the exercise heading is found. */
+  async function readChapter(c: BookChapterDTO, how: "exercise" | "all" | number[]): Promise<number> {
+    const doc = await getDoc();
+    if (!doc) return -1;
+    const pool = await getPool();
+    const label = `Ch ${c.number}: ${c.title}`;
+    let read = new Map<number, string>();
+    if (Array.isArray(how)) read = await ocrList(doc, pool, how, `${label} — pages ${how.join(", ")}`);
+    else if (how === "all") read = await ocrList(doc, pool, chapterNeeds(c).map((l) => l.pageNo), label);
+    else {
+      const saved: { pageNo: number; text: string; ocrLevel?: number }[] = [];
+      for (let f = c.startPage; f <= c.endPage; f += 31) {
+        const d = await api<{ pages: typeof saved }>(`/api/books/${bookId}/pages?from=${f}&to=${Math.min(c.endPage, f + 30)}`, "GET");
+        saved.push(...d.pages);
+      }
+      const textOf = (n: number) => { const p = saved.find((x) => x.pageNo === n); return p && p.ocrLevel !== 1 ? p.text : ""; };
+      // stop at the page where the exercise starts ("EXERCISE"); a "B. Short questions" heading can sit inside an
+      // exercise, so after one of those only 2 more pages are read; never more than 12 pages back
+      let p = c.endPage, found = false, steps = 0, extra = -1;
+      while (p >= c.startPage && !found && steps < 12 && extra !== 0 && !stop.current) {
+        const batch: number[] = [];
+        while (batch.length < pool.size && p >= c.startPage) batch.push(p--);
+        steps += batch.length;
+        const got = await ocrList(doc, pool, batch.filter((n) => needs(levelOf(n))), `${label} — looking for its exercise`);
+        got.forEach((t, n) => read.set(n, t));
+        for (const n of batch) {
+          const h = exerciseHeadingOf(read.get(n) ?? textOf(n));
+          if (h === "start") found = true;
+          else if (h === "section" && extra < 0) extra = 3;
+        }
+        if (extra > 0) extra = Math.max(0, extra - batch.length);
+      }
+    }
+    if (!read.size) return 0;
+    const list = [...read].map(([pageNo, text]) => ({ pageNo, text: text.slice(0, 60000), ocr: true, ocrLevel: 2 }));
+    for (let i = 0; i < list.length; i += 25) await api(`/api/books/${bookId}/pages`, "POST", { pages: list.slice(i, i + 25) });
+    return read.size;
+  }
+
+  async function start(list: BookChapterDTO[], how: "exercise" | "all" | number[]) {
+    stop.current = false;
+    let total = 0;
+    try {
+      for (const c of list) {
+        if (stop.current) break;
+        const n = await readChapter(c, how);
+        if (n < 0) { waiting.current = { list, how }; return; } // PDF needed — continues after it is chosen
+        total += n;
+        if (n > 0) {
+          setRun({ label: `Ch ${c.number}: saving its questions…`, done: 0, total: 0 });
+          await rebuild();
+          await loadLevels();
+        }
+      }
+      setMsg(stop.current ? "OCR paused — press ▶ Continue any time." : `OCR done ✔ ${total} page(s) read. The new questions are in the chapters on the left.`);
+    } catch (e) {
+      setMsg(`OCR stopped: ${(e as Error).message}`);
+    } finally {
+      setRun(null);
+    }
+  }
+
+  // just uploaded (…?ocr=1): start reading the exercises chapter by chapter right away
+  useEffect(() => {
+    if (started.current || !levels || params.get("ocr") !== "1" || !pending.length) return;
+    started.current = true;
+    start(pending, "exercise");
+  }, [levels]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!levels || (!pending.length && !run && !needFile && !current)) return null;
+  const pct = run && run.total ? Math.round((run.done / run.total) * 100) : 0;
+  const curNeeds = current ? chapterNeeds(current).length : 0;
+  return (
+    <div className="card" style={{ marginTop: 10, borderLeft: pending.length ? "4px solid var(--warn)" : undefined }}>
+      {pending.length > 0 && (
+        <div className="row">
+          <b>🔍 Scanned pages still to read: {pending.length} chapter(s), {pendingPages} page(s)</b>
+          <span className="small muted">Questions are read chapter by chapter — each chapter can be used as soon as it is done. Keep this tab open.</span>
+        </div>
+      )}
+      {run ? (
+        <div style={{ marginTop: 8 }}>
+          <div className="row">
+            <span className="small">{run.label}{run.total ? ` — page ${run.done} of ${run.total}` : ""}</span>
+            <span className="spacer" />
+            <button className="btn-ghost btn-sm" onClick={() => { stop.current = true; }}>⏸ Pause</button>
+          </div>
+          <div style={{ height: 8, background: "var(--line)", borderRadius: 4, marginTop: 6 }}><div style={{ width: `${pct}%`, height: 8, background: "var(--brand)", borderRadius: 4 }} /></div>
+        </div>
+      ) : (
+        <div className="row" style={{ marginTop: pending.length ? 8 : 0 }}>
+          {pending.length > 0 && <button onClick={() => start(pending, "exercise")}>▶ {started.current ? "Continue" : "Read"} exercise questions of all {pending.length} chapters</button>}
+          {pending.length > 0 && <button className="btn-ghost" title="Every scanned page, not only the exercises (for definitions / auto-generate). Slower." onClick={() => start(pending, "all")}>Read every page of these chapters</button>}
+          {current && (
+            <>
+              <span className="small muted">Ch {current.number}{curNeeds ? ` (${curNeeds} page(s) not read)` : ""}:</span>
+              {curNeeds > 0 && <button className="btn-ghost btn-sm" onClick={() => start([current], "exercise")}>🔍 Read its exercise</button>}
+              {curNeeds > 0 && <button className="btn-ghost btn-sm" onClick={() => start([current], "all")}>Read whole chapter</button>}
+              <input style={{ width: 120 }} placeholder="pages e.g. 45-48" value={pagesInput} onChange={(e) => setPagesInput(e.target.value)} />
+              <button className="btn-ghost btn-sm" disabled={!parseNumberList(pagesInput, 3000).length} title="Read exactly these PDF pages with OCR (e.g. the exercise pages)" onClick={() => start([current], parseNumberList(pagesInput, 3000))}>Read these pages</button>
+            </>
+          )}
+          <label className="check small" title="Book has both English and Urdu text (about 2× slower)"><input type="checkbox" checked={mixed} onChange={(e) => { setMixed(e.target.checked); poolRef.current?.terminate().catch(() => undefined); poolRef.current = null; }} /> English + Urdu</label>
+        </div>
+      )}
+      {needFile && (
+        <div className="row" style={{ marginTop: 8 }}>
+          <span className="small" style={{ color: "var(--warn)" }}>This computer doesn't have this book's PDF yet. Choose it once — it stays in this browser (nothing is uploaded).</span>
+          <label className="btn btn-sm" style={{ margin: 0, color: "#fff" }}>
+            📘 Choose the PDF
+            <input type="file" hidden accept="application/pdf" onChange={async (e) => {
+              const f = e.target.files?.[0]; e.target.value = "";
+              if (!f) return;
+              await getDoc(f);
+              const w = waiting.current; waiting.current = null;
+              if (w) start(w.list, w.how);
+            }} />
+          </label>
         </div>
       )}
     </div>

@@ -71,6 +71,7 @@ export const PUT = handle(async (req: Request, { params }: Ctx) => {
   const chapters: Prisma.BookChapterCreateManyInput[] = [];
   const exercises: Prisma.BookExerciseCreateManyInput[] = [];
   const items: Prisma.BookItemCreateManyInput[] = [];
+  const t0 = Date.now();
   for (const c of b.chapters) {
     const chapterId = randomUUID();
     chapters.push({ id: chapterId, bookId: book.id, number: c.number, title: noNul(c.title) || `Chapter ${c.number}`, startPage: c.startPage, endPage: Math.max(c.startPage, c.endPage), topics: c.topics.map(noNul), isAlp: c.isAlp ?? oldAlp.get(c.number) ?? false });
@@ -84,6 +85,8 @@ export const PUT = handle(async (req: Request, { params }: Ctx) => {
         const id = keepId && !taken.has(keepId) ? keepId : randomUUID();
         taken.add(id);
         items.push({
+          // one millisecond apart → the book's printed order is kept when items are listed (createMany gives them one time)
+          createdAt: new Date(t0 + items.length),
           id, bookId: book.id, chapterId, exerciseId, pageNo: it.pageNo ?? null, qNo: noNulOrNull(it.qNo), topic: noNulOrNull(it.topic), source: it.source,
           type: it.type, text: noNul(it.text), options: it.options ? it.options.map(noNul) : Prisma.DbNull,
           // a re-read keeps an answer the teacher already entered when the book itself has no key for it
