@@ -12,7 +12,7 @@ export const SCOPE_LABEL: Record<Scope, string> = {
   Q2: "Quarter Book — 2nd quarter",
   Q3: "Quarter Book — 3rd quarter",
   Q4: "Quarter Book — 4th quarter",
-  CUSTOM: "Custom chapters",
+  CUSTOM: "Custom — choose chapters yourself",
 };
 
 export const SCOPE_TITLE: Record<Scope, string> = {

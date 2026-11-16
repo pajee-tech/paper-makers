@@ -14,25 +14,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import QuestionForm, { cleanDraft, emptyDraft, type DraftQuestion } from "./QuestionForm";
 import { canvasToCompressed, loadPdfJs } from "@/lib/clientImage";
+import { cleanLine, matchOptionLine, matchQuestionStart, splitInlineOptions } from "@/lib/bookParse";
+import { createOcr, ocrPage, pageText, textQuality, type OcrWorker } from "@/lib/pdfText";
 import type { QType } from "@/lib/types";
 
 interface Line { text: string; y: number }
 interface Rect { x: number; y: number; w: number; h: number }
 
-const Q_START = /^\s*(?:Q\.?\s*)?(?:\d{1,3}|[ivxIVX]{1,5})\s*[.):\-]\s+(.+)/;
+const Q_START = /^\s*(?:Q\.?\s*)?(?:\d{1,3}|[ivxIVX]{1,5})\s*[.):\-۔]\s+(.+)/;
 const OPT_LINE = /^\s*\(?([a-dA-D])\s*[).]\s*(.+)/;
-const INLINE_OPTS = /\(([a-dA-D])\)\s*/;
 
-function splitInlineOptions(s: string): string[] | null {
-  if (!INLINE_OPTS.test(s)) return null;
-  const parts = s.split(/\(([a-dA-D])\)\s*/).filter((p) => p !== undefined);
-  // parts: [before, 'a', optA, 'b', optB, ...]
-  const opts: string[] = [];
-  for (let i = 1; i < parts.length; i += 2) opts.push((parts[i + 1] ?? "").trim());
-  return opts.length >= 3 || (opts.length >= 2 && !parts[0].trim()) ? opts : null;
-}
-
-/** Heuristic question detection from a page's text lines. Teachers review every draft. */
+/**
+ * Heuristic question detection from a page's text lines (English and Urdu: "۱۔", "(الف)"). Teachers review
+ * every draft. MCQ answers are never guessed — the correct option stays empty until the teacher sets it.
+ */
 export function detectQuestions(lines: string[], defaultMarks = 1): DraftQuestion[] {
   const out: DraftQuestion[] = [];
   let cur: DraftQuestion | null = null;
@@ -40,6 +35,7 @@ export function detectQuestions(lines: string[], defaultMarks = 1): DraftQuestio
     if (!cur) return;
     if (cur.options && cur.options.filter(Boolean).length >= 3) cur.type = "MCQ";
     else {
+      if (cur.options?.length) cur.text += " " + cur.options.map((o, i) => `(${"abcd"[i]}) ${o}`).join(" ");
       cur.options = null;
       cur.correctOption = null;
       if (/_{3,}|\.{4,}|…/.test(cur.text)) {
@@ -48,28 +44,37 @@ export function detectQuestions(lines: string[], defaultMarks = 1): DraftQuestio
       } else if (/\b(true|false)\b/i.test(cur.text) && cur.text.length < 160) cur.type = "TRUE_FALSE";
       else cur.type = cur.text.length > 220 ? "LONG" : "SHORT";
     }
-    out.push(cur);
+    if (cur.text.trim()) out.push(cur);
     cur = null;
   };
+  const join = (a: string, b: string) => (/[A-Za-z]-$/.test(a) && /^[a-z]/.test(b) ? a.slice(0, -1) + b : `${a} ${b}`);
   for (const raw of lines) {
-    const line = raw.trim();
+    const line = cleanLine(raw);
     if (!line) continue;
-    const qm = line.match(Q_START);
-    const om = line.match(OPT_LINE);
+    const qm = matchQuestionStart(line);
+    const om = matchOptionLine(line);
     if (qm && !(cur && om)) {
       push();
-      const inline = splitInlineOptions(qm[1]);
-      cur = { ...emptyDraft("SHORT"), marks: defaultMarks, text: inline ? qm[1].split(INLINE_OPTS)[0].trim() : qm[1], options: inline ?? [] };
+      const inline = splitInlineOptions(qm.text);
+      cur = { ...emptyDraft("SHORT"), marks: defaultMarks, text: inline ? inline.stem : qm.text, options: inline?.opts ?? [] };
     } else if (cur && om) {
-      cur.options = [...(cur.options ?? []), om[2]];
+      const all = splitInlineOptions(line);
+      cur.options = [...(cur.options ?? []), ...(all && !all.stem ? all.opts : [om.text])];
     } else if (cur) {
       const inline = splitInlineOptions(line);
-      if (inline) cur.options = [...(cur.options ?? []), ...inline];
-      else cur.text += " " + line;
+      if (inline && (!inline.stem || !(cur.options ?? []).length)) {
+        if (inline.stem) cur.text = join(cur.text, inline.stem);
+        cur.options = [...(cur.options ?? []), ...inline.opts];
+      } else if ((cur.options ?? []).length) cur.options![cur.options!.length - 1] = join(cur.options![cur.options!.length - 1], line);
+      else cur.text = join(cur.text, line);
+    } else if (lines.length <= 3 || /[?؟]\s*$/.test(line)) {
+      // a few selected lines without a printed number (or an unnumbered question) are still one question
+      const inline = splitInlineOptions(line);
+      cur = { ...emptyDraft("SHORT"), marks: defaultMarks, text: inline ? inline.stem : line, options: inline?.opts ?? [] };
     }
   }
   push();
-  return out.map((d) => (d.type === "MCQ" ? { ...d, options: d.options!.slice(0, 5), correctOption: 0 } : d));
+  return out.map((d) => (d.type === "MCQ" ? { ...d, options: d.options!.slice(0, 5), correctOption: null } : d));
 }
 
 export default function PdfBookPaperExtractor({ onSave, disabled }: { onSave: (drafts: DraftQuestion[]) => Promise<void>; disabled?: boolean }) {
@@ -87,6 +92,34 @@ export default function PdfBookPaperExtractor({ onSave, disabled }: { onSave: (d
   const [crop, setCrop] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [saving, setSaving] = useState(false);
+  const [autoOcr, setAutoOcr] = useState(true);
+  const ocrRef = useRef<Promise<OcrWorker> | null>(null);
+  const renderSeq = useRef(0);
+  useEffect(() => () => { ocrRef.current?.then((w) => w.terminate()).catch(() => undefined); }, []);
+
+  /** Free OCR (English + Urdu) of one page; the engine is loaded once and reused. */
+  const runOcr = useCallback(async (n: number) => {
+    const doc = docRef.current;
+    if (!doc) return;
+    const seq = renderSeq.current;
+    try {
+      if (!ocrRef.current) {
+        setStatus("Loading free OCR engine (English + Urdu)… first time takes a minute");
+        ocrRef.current = createOcr("eng+urd", (f) => { if (seq === renderSeq.current) setStatus(`OCR scanning page ${n} of ${doc.numPages}… ${Math.round(f * 100)}%`); });
+      }
+      const w = await ocrRef.current;
+      setStatus(`OCR scanning page ${n} of ${doc.numPages}…`);
+      const text = await ocrPage(await doc.getPage(n), w);
+      if (seq !== renderSeq.current) return; // the teacher moved to another page meanwhile
+      const ls = text.split("\n").filter(Boolean).map((t, i) => ({ y: i, text: t }));
+      setLines(ls);
+      setPicked(new Set());
+      setStatus(ls.length ? `Page ${n} read with OCR — check the text before saving.` : "OCR found no text on this page. Drag a box to crop it as an image snippet instead.");
+    } catch (e) {
+      ocrRef.current = null;
+      if (seq === renderSeq.current) setStatus(`OCR could not run: ${(e as Error)?.message || e}. Drag a box to crop the question as an image instead.`);
+    }
+  }, []);
 
   const renderPage = useCallback(async (n: number) => {
     const doc = docRef.current;
@@ -105,23 +138,21 @@ export default function PdfBookPaperExtractor({ onSave, disabled }: { onSave: (d
     canvas.style.height = `${vp.height / dpr}px`;
     await p.render({ canvasContext: canvas.getContext("2d")!, viewport: vp }).promise;
 
-    // Group text items into visual lines (top → bottom)
-    const tc = await p.getTextContent();
-    const rows = new Map<number, { x: number; s: string }[]>();
-    for (const it of tc.items as { str: string; transform: number[] }[]) {
-      if (!("str" in it) || !it.str.trim()) continue;
-      const y = Math.round(it.transform[5] / 3) * 3;
-      const arr = rows.get(y) ?? [];
-      arr.push({ x: it.transform[4], s: it.str });
-      rows.set(y, arr);
-    }
-    const ls = [...rows.entries()]
-      .sort((a, b) => b[0] - a[0])
-      .map(([y, parts]) => ({ y, text: parts.sort((a, b) => a.x - b.x).map((p) => p.s).join(" ").replace(/\s+/g, " ").trim() }));
-    setLines(ls);
+    // Text lines (top → bottom); scanned / garbled pages (InPage Urdu) are read with free OCR
+    const seq = ++renderSeq.current;
+    const text = await pageText(p);
+    if (seq !== renderSeq.current) return;
+    const ls = text.split("\n").filter(Boolean).map((t, i) => ({ y: i, text: t }));
+    const q = textQuality(text);
+    setLines(q.ok ? ls : []);
     setPicked(new Set());
-    setStatus(ls.length ? "" : "No selectable text on this page (scanned or Urdu InPage PDF). Drag a box to crop it as an image snippet instead.");
+    if (q.ok) setStatus("");
+    else if (autoOcrRef.current) runOcr(n);
+    else setStatus(q.reason === "empty" ? "No selectable text on this page (scanned or Urdu InPage PDF). Press “Force OCR” or drag a box to crop it as an image." : "This page's text is garbled (InPage Urdu / broken font). Press “Force OCR” or drag a box to crop it as an image.");
   }, []);
+
+  const autoOcrRef = useRef(autoOcr);
+  autoOcrRef.current = autoOcr;
 
   useEffect(() => {
     if (numPages) renderPage(page);
@@ -219,6 +250,10 @@ export default function PdfBookPaperExtractor({ onSave, disabled }: { onSave: (d
             <button className="btn-ghost btn-sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>◀ Prev</button>
             <input style={{ width: 70 }} type="number" min={1} max={numPages} value={page} onChange={(e) => setPage(Math.min(numPages, Math.max(1, Number(e.target.value))))} />
             <button className="btn-ghost btn-sm" disabled={page >= numPages} onClick={() => setPage((p) => p + 1)}>Next ▶</button>
+            <label className="check small" title="Pages without readable text (scanned, InPage Urdu) are read automatically with free OCR">
+              <input type="checkbox" checked={autoOcr} onChange={(e) => setAutoOcr(e.target.checked)} /> Auto OCR
+            </label>
+            <button className="btn-ghost btn-sm" title="Read this page as an image with free OCR (English + Urdu)" onClick={() => { renderSeq.current++; runOcr(page); }}>🔍 Force OCR (English + Urdu)</button>
           </>
         )}
       </div>
