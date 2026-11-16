@@ -71,7 +71,6 @@ export const PaperInput = z.object({
     withGenerated: z.boolean().optional(),
     bookId: z.string().max(40).optional(),
     bookChapterIds: z.array(z.string().max(40)).max(200).optional(),
-    bookChapterNumbers: z.array(z.number().int().min(0).max(999)).max(200).optional(),
     chapterIds: z.array(z.string().max(40)).max(200).optional(),
   }).nullish(),
 });

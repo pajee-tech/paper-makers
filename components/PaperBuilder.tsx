@@ -6,7 +6,6 @@ import MathText from "./MathText";
 import { api, useCatalog } from "./useCatalog";
 import { TEMPLATES, TEMPLATE_GROUPS, paperTotal, sectionMarks } from "@/lib/templates";
 import { parseNumberList } from "@/lib/bookParse";
-import { FEATURES } from "@/lib/edition";
 import { findSubjectTemplate } from "@/lib/subjectTemplates";
 import { allowedInSection, normalizeForSection } from "@/lib/questionRules";
 import { scaleSection, scopeChapters, scopeFactor, SCOPE_LABEL, SCOPE_TITLE, type MarksMode, type Scope } from "@/lib/scope";
@@ -36,7 +35,6 @@ export interface BuilderInitial {
 export interface BuildOptions {
   scope?: Scope; alpOnly?: boolean; marksMode?: MarksMode; useBank?: boolean; useBook?: boolean; withGenerated?: boolean;
   bookId?: string; bookChapterIds?: string[]; chapterIds?: string[];
-  bookChapterNumbers?: number[]; // custom book chapters by number: a ♻️ Re-read gives chapters new IDs
 }
 
 const rid = () => Math.random().toString(36).slice(2, 10);
@@ -78,12 +76,11 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
   const [bookChapterIds, setBookChapterIds] = useState<string[]>(bo?.bookChapterIds ?? []);
   const [withGenerated, setWithGenerated] = useState(bo?.withGenerated ?? true);
   const [bookItems, setBookItems] = useState<BankQ[]>([]);
-  const [byNo, setByNo] = useState<{ sec: number; chapterId: string; exerciseId: string; numbers: string; ticked: string[] } | null>(null);
-  const [saveToBank, setSaveToBank] = useState<{ on: boolean; chapterId: string }>({ on: false, chapterId: "" });
+  const [byNo, setByNo] = useState<{ sec: number; exerciseId: string; numbers: string } | null>(null);
   // --- test scope ---
   // Old papers (saved before build options existed) open as Custom so their chapters are not changed.
   const [scope, setScope] = useState<Scope>(bo?.scope ?? (initial ? "CUSTOM" : "FULL"));
-  const [alpOnly, setAlpOnly] = useState(FEATURES.smartSyllabus ? bo?.alpOnly ?? false : false);
+  const [alpOnly, setAlpOnly] = useState(bo?.alpOnly ?? false);
   const [marksMode, setMarksMode] = useState<MarksMode>(bo?.marksMode ?? "FULL");
   const keepBookChapters = useRef(!!bo?.bookId); // first outline load on Edit keeps the saved chapter ticks
   const [loadingPool, setLoadingPool] = useState(0); // >0 while questions are being fetched
@@ -102,8 +99,6 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
   const total = paperTotal(sections);
   const all = useMemo(() => [...(useBank ? bank : []), ...(useBook ? bookItems : [])], [useBank, bank, useBook, bookItems]);
   const used = useMemo(() => new Set(sections.flatMap((s) => s.questions.map((q) => q.id))), [sections]);
-  // 🎲 Auto-pick pool — the testing edition never picks from uploaded books (teachers tick those by hand)
-  const autoAll = useMemo(() => (FEATURES.bookAutoPick ? all : all.filter((q) => !q.fromBook)), [all]);
   const templates = useMemo(() => (cls ? [...TEMPLATES].sort((a, b) => Number(b.level.includes(cls.level)) - Number(a.level.includes(cls.level))) : TEMPLATES), [cls]);
 
   // Load bank questions for the selected chapters (or all chapters of the subject).
@@ -111,9 +106,7 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
     const ids = chapterIds.length ? chapterIds : sub?.chapters.map((c) => c.id) ?? [];
     if (!ids.length) return setBank([]);
     setLoadingPool((n) => n + 1);
-    let stale = false; // chapters changed again before this answer came back → ignore it
-    cachedGet<{ questions: BankQ[] }>(`/api/questions?take=500&chapterIds=${ids.join(",")}`).then((d) => { if (!stale) setBank(d.questions); }).catch(() => { if (!stale) setBank([]); }).finally(() => setLoadingPool((n) => n - 1));
-    return () => { stale = true; };
+    cachedGet<{ questions: BankQ[] }>(`/api/questions?take=500&chapterIds=${ids.join(",")}`).then((d) => setBank(d.questions)).catch(() => setBank([])).finally(() => setLoadingPool((n) => n - 1));
   }, [chapterIds, sub, refreshKey]);
 
   // Books for this class + subject (shared platform library + own).
@@ -136,21 +129,14 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
     if (!bookId) return;
     cachedGet<{ chapters: BookChapterDTO[] }>(`/api/books/${bookId}`).then((d) => setOutline(d.chapters)).catch(() => {});
   }, [bookId]);
-  // ↻ Refresh questions also reloads the book's chapters (Smart Syllabus marks made since the page opened); ticks are kept
-  useEffect(() => {
-    if (!refreshKey || !bookId) return;
-    cachedGet<{ chapters: BookChapterDTO[] }>(`/api/books/${bookId}`).then((d) => setOutline(d.chapters)).catch(() => {});
-  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!bookId || !useBook) return setBookItems([]);
     const src = withGenerated ? "EXERCISE,MANUAL,GENERATED" : "EXERCISE,MANUAL";
     setLoadingPool((n) => n + 1);
-    let stale = false; // chapters changed again before this answer came back → ignore it
     cachedGet<{ items: (DraftQuestion & { id: string; chapterId: string; exerciseId: string | null; qNo: string | null; pageNo: number | null })[] }>(
       `/api/books/${bookId}/items?source=${src}${bookChapterIds.length ? `&chapterIds=${bookChapterIds.join(",")}` : ""}`,
-    ).then((d) => { if (!stale) setBookItems(d.items.map((q) => ({ ...q, id: `book-${q.id}`, fromBook: true }))); }).catch(() => { if (!stale) setBookItems([]); }).finally(() => setLoadingPool((n) => n - 1));
-    return () => { stale = true; };
+    ).then((d) => setBookItems(d.items.map((q) => ({ ...q, id: `book-${q.id}`, fromBook: true })))).catch(() => setBookItems([])).finally(() => setLoadingPool((n) => n - 1));
   }, [bookId, useBook, bookChapterIds, withGenerated, refreshKey]);
 
   // Scope → which chapters (question bank + textbook) feed this paper.
@@ -167,40 +153,6 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
     setChapterIds(pickIds(bankChapters));
     setBookChapterIds(pickIds(outline));
   }, [scope, alpOnly, bankChapters, outline]);
-
-  // Custom scope on Edit: saved book chapter IDs that no longer exist (book re-read) are found again by chapter number.
-  useEffect(() => {
-    if (scope !== "CUSTOM" || !outline.length) return;
-    setBookChapterIds((ids) => {
-      const real = ids.filter((id) => id === "__none__" || outline.some((c) => c.id === id));
-      if (real.length === ids.length) return ids;
-      const byNum = outline.filter((c) => bo?.bookChapterNumbers?.includes(c.number)).map((c) => c.id);
-      return byNum.length ? byNum : real;
-    });
-  }, [outline]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Which chapters the chosen scope covers — shown ticked below, so the teacher sees exactly what feeds the paper.
-  const scopeBookIds = useMemo(() => new Set(scopeChapters(outline, scope, alpOnly).map((c) => c.id)), [outline, scope, alpOnly]);
-  const scopeBankIds = useMemo(() => new Set(scopeChapters(bankChapters, scope, alpOnly).map((c) => c.id)), [bankChapters, scope, alpOnly]);
-  const isCustom = scope === "CUSTOM";
-  const bookTicked = (id: string) => (isCustom ? bookChapterIds.includes(id) : scopeBookIds.has(id));
-  const bankTicked = (id: string) => (isCustom ? chapterIds.includes(id) : scopeBankIds.has(id));
-
-  /** Test scope changed: chapters follow the scope and the paper's questions are picked again from them. */
-  function changeScope(v: Scope) {
-    if (v === "CUSTOM") {
-      // start custom from the chapters the previous scope covered; the teacher then ticks / unticks
-      setBookChapterIds(outline.filter((c) => scopeBookIds.has(c.id)).map((c) => c.id));
-      setChapterIds(bankChapters.filter((c) => scopeBankIds.has(c.id)).map((c) => c.id));
-    }
-    setScope(v);
-    setMarksMode(v.startsWith("Q") ? "SCALE" : "FULL");
-    if (sections.length) setAutoPick(true);
-  }
-  const toggleCustom = (setter: typeof setBookChapterIds, id: string, on: boolean) => {
-    setter((ids) => (on ? [...ids.filter((x) => x !== "__none__" && x !== id), id] : ids.filter((x) => x !== id)));
-    if (sections.length) setAutoPick(true);
-  };
 
   useEffect(() => {
     const t = SCOPE_TITLE[scope];
@@ -258,42 +210,19 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
     } catch (e) { setErr((e as Error).message); }
   }
 
-  /** Book questions of the picker's chapter / exercise, in printed order. */
-  const pickerItems = (p: NonNullable<typeof byNo>) =>
-    bookItems.filter((q) => (!p.chapterId || q.chapterId === p.chapterId) && (!p.exerciseId || (p.exerciseId === "_other" ? !q.exerciseId : q.exerciseId === p.exerciseId)));
-
-  /** "1-5, 8" → ticks those printed question numbers (1(ii) counts as 1) in the picker list. */
-  function tickByNumbers() {
+  function addByNumbers() {
     if (!byNo) return;
     const s = sections[byNo.sec];
-    const list = pickerItems(byNo).filter((q) => !used.has(q.id) && allowedInSection(q as QuestionSnapshot, s.questionType));
-    const wanted = new Set(parseNumberList(byNo.numbers, 500));
-    const byPrinted = list.filter((q) => wanted.has(Number((q.qNo ?? "").match(/^\d+/)?.[0] ?? NaN)));
-    const ids = byPrinted.length ? byPrinted.map((q) => q.id) : [...wanted].map((n) => list[n - 1]?.id).filter(Boolean) as string[];
-    setByNo({ ...byNo, ticked: [...new Set([...byNo.ticked, ...ids])] });
-  }
-
-  function addTicked() {
-    if (!byNo) return;
-    const s = sections[byNo.sec];
-    const picked = bookItems.filter((q) => byNo.ticked.includes(q.id) && !used.has(q.id) && allowedInSection(q as QuestionSnapshot, s.questionType));
+    const inEx = bookItems.filter((q) => q.exerciseId === byNo.exerciseId);
+    const wanted = parseNumberList(byNo.numbers, inEx.length);
+    const picked = wanted.map((n) => inEx[n - 1]).filter((q) => q && !used.has(q.id) && allowedInSection(q as QuestionSnapshot, s.questionType));
+    if (!picked.length) return alert(`No ${QTYPE_LABEL[s.questionType]} at those numbers. Only questions of this section's type can be added.`);
     updateSec(byNo.sec, { questions: [...s.questions, ...picked.map((q) => toSnapshot(q, s.marksEach, s.questionType))] });
     setByNo(null);
   }
 
   const updateSec = (i: number, patch: Partial<BSection>) => setSections((ss) => ss.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   // Strict: an MCQ section only gets MCQs (with options), SHORT only short, LONG only long, etc.
-  /** Why 🎲 Auto-pick can't run (shown next to the button), "" when it can. */
-  const autoPickBlocked = !sections.length
-    ? "Add a section first (Load a template… or + Section)."
-    : loadingPool > 0
-      ? "Loading questions…"
-      : !autoAll.length
-        ? FEATURES.bookAutoPick
-          ? "No questions in the chosen chapters. Add questions in Question Bank, tick 📘 From textbook, or choose another Test scope."
-          : "No Question Bank questions in these chapters. Use 📘 Pick from book in a section, write a custom question, or add questions in Question Bank."
-        : "";
-
   const pool = (type: QType) => all.filter((q) => allowedInSection(q as QuestionSnapshot, type) && !used.has(q.id));
 
   function applyTemplate(key: string) {
@@ -309,17 +238,16 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
     if (!autoPick || loadingPool > 0) return;
     const t = setTimeout(() => { autofill(); setAutoPick(false); }, 150);
     return () => clearTimeout(t);
-  }, [autoPick, loadingPool, autoAll]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [autoPick, loadingPool, all]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function autofill() {
     const taken = new Set<string>();
     setSections((ss) =>
       ss.map((s) => {
-        // kept: the teacher's own questions, and (testing edition) book questions ticked by hand that are still in scope
-        const keep = s.questions.filter((q) => q.id.startsWith("custom-") || (!FEATURES.bookAutoPick && q.id.startsWith("book-") && bookItems.some((b) => b.id === q.id)));
+        const keep = s.questions.filter((q) => q.id.startsWith("custom-"));
         keep.forEach((q) => taken.add(q.id));
         // MCQs that already have a correct answer are picked first (so the answer key / OMR scoring is complete)
-        const avail = shuffle(autoAll.filter((q) => allowedInSection(q as QuestionSnapshot, s.questionType) && !taken.has(q.id)))
+        const avail = shuffle(all.filter((q) => allowedInSection(q as QuestionSnapshot, s.questionType) && !taken.has(q.id)))
           .sort((a, b) => (s.questionType === "MCQ" ? Number(b.correctOption != null) - Number(a.correctOption != null) : 0));
         const pick = avail.slice(0, Math.max(0, s.count - keep.length));
         pick.forEach((q) => taken.add(q.id));
@@ -352,7 +280,7 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
       subjectId: meta.subjectId || null,
       sections: sections.filter((s) => s.questions.length).map(({ count: _c, base: _b, ...s }) => ({ ...s, questions: s.questions.filter((q) => allowedInSection(q, s.questionType)).map((q) => normalizeForSection(q, s.questionType)) })),
       printSettings: initial?.printSettings ?? null,
-      buildOptions: { scope, alpOnly, marksMode, useBank, useBook, withGenerated, bookId: bookId || undefined, bookChapterIds, chapterIds, bookChapterNumbers: outline.filter((c) => bookChapterIds.includes(c.id)).map((c) => c.number) },
+      buildOptions: { scope, alpOnly, marksMode, useBank, useBook, withGenerated, bookId: bookId || undefined, bookChapterIds, chapterIds },
     };
     try {
       if (initial) {
@@ -421,10 +349,10 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
           <div className="qcard" style={{ background: "#f8fafc", marginBottom: 10 }}>
             <label>Test scope</label>
             <div className="row">
-              <select style={{ width: 260 }} value={scope} onChange={(e) => changeScope(e.target.value as Scope)}>
+              <select style={{ width: 260 }} value={scope} onChange={(e) => { const v = e.target.value as Scope; setScope(v); setMarksMode(v.startsWith("Q") ? "SCALE" : "FULL"); }}>
                 {(Object.keys(SCOPE_LABEL) as Scope[]).map((k) => <option key={k} value={k}>{SCOPE_LABEL[k]}</option>)}
               </select>
-              {FEATURES.smartSyllabus && <label className="check"><input type="checkbox" checked={alpOnly} onChange={(e) => { setAlpOnly(e.target.checked); if (e.target.checked && scope === "CUSTOM") setScope("FULL"); if (e.target.checked && sections.length) setAutoPick(true); }} /> Smart Syllabus / ALP only</label>}
+              <label className="check"><input type="checkbox" checked={alpOnly} onChange={(e) => { setAlpOnly(e.target.checked); if (e.target.checked && scope === "CUSTOM") setScope("FULL"); if (e.target.checked && sections.length) setAutoPick(true); }} /> Smart Syllabus / ALP only</label>
               {scope !== "FULL" && (
                 <>
                   <label className="check"><input type="radio" name="marksMode" checked={marksMode === "FULL"} onChange={() => setMarksMode("FULL")} /> Keep full board-pattern marks</label>
@@ -433,7 +361,7 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
               )}
             </div>
             <div className="small muted" style={{ marginTop: 4 }}>
-              {scope === "CUSTOM" ? "Tick the chapters yourself below — questions are picked again from them." : `Chapters are picked automatically${alpOnly ? " from the Smart Syllabus (ALP) chapters" : ""} (shown ticked below). To choose chapters yourself, pick “${SCOPE_LABEL.CUSTOM}”.`}
+              {scope === "CUSTOM" ? "Tick chapters yourself below." : `Chapters are picked automatically${alpOnly ? " from the Smart Syllabus (ALP) chapters" : ""}.`}
               {(chapterIds.includes("__none__") || bookChapterIds.includes("__none__")) && <span style={{ color: "var(--warn)" }}> No chapters match — mark Smart Syllabus chapters with the ALP button in Question Bank / Book Library.</span>}
             </div>
           </div>
@@ -460,20 +388,15 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
                 </div>
                 {outline.length > 0 && (
                   <>
-                    <label style={{ marginTop: 8 }}>Book chapters for this paper {isCustom ? "(tick the chapters you want · none ticked = whole book)" : `(${SCOPE_LABEL[scope]}${alpOnly ? " · ALP" : ""})`}</label>
+                    <label style={{ marginTop: 8 }}>Book chapters for this paper (none ticked = whole book)</label>
                     <div className="row" style={{ gap: 10 }}>
                       {outline.map((c) => (
-                        <label key={c.id} className="check" style={isCustom ? undefined : { opacity: 0.75 }} title={isCustom ? undefined : `Set by Test scope. Choose “${SCOPE_LABEL.CUSTOM}” to pick chapters yourself.`}>
-                          <input type="checkbox" disabled={!isCustom} checked={bookTicked(c.id)} onChange={(e) => toggleCustom(setBookChapterIds, c.id, e.target.checked)} />
+                        <label key={c.id} className="check">
+                          <input type="checkbox" checked={bookChapterIds.includes(c.id)} onChange={(e) => { setScope("CUSTOM"); setBookChapterIds((ids) => (e.target.checked ? [...ids.filter((x) => x !== "__none__"), c.id] : ids.filter((x) => x !== c.id))); }} />
                           {c.number}. {c.title} {c.isAlp && <span className="badge ok">ALP</span>} <span className="muted small">({c._count.items})</span>
                         </label>
                       ))}
                     </div>
-                    {useBook && !loadingPool && bookItems.length === 0 && (
-                      <div className="small" style={{ color: "var(--warn)", marginTop: 4 }}>
-                        No questions in {isCustom && bookChapterIds.length ? "the ticked chapters" : "these chapters"} of this book. {outline.every((c) => !c._count.items) ? "The book has no questions yet (scanned / Urdu PDF?) — open it in Book Library and press 📘 Re-read from PDF (OCR)." : "Choose other chapters or another scope."}
-                      </div>
-                    )}
                   </>
                 )}
               </div>
@@ -482,11 +405,11 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
         )}
         {sub && sub.chapters.length > 0 && useBank && (
           <div style={{ marginTop: 10 }}>
-            <label>Question bank chapters {isCustom ? "(tick the chapters you want · none ticked = whole subject)" : `(${SCOPE_LABEL[scope]}${alpOnly ? " · ALP" : ""})`} · {bank.length} questions available</label>
+            <label>Question bank chapters (none ticked = whole subject) · {bank.length} questions available</label>
             <div className="row" style={{ gap: 10 }}>
               {sub.chapters.map((ch) => (
-                <label key={ch.id} className="check" style={isCustom ? undefined : { opacity: 0.75 }} title={isCustom ? undefined : `Set by Test scope. Choose “${SCOPE_LABEL.CUSTOM}” to pick chapters yourself.`}>
-                  <input type="checkbox" disabled={!isCustom} checked={bankTicked(ch.id)} onChange={(e) => toggleCustom(setChapterIds, ch.id, e.target.checked)} />
+                <label key={ch.id} className="check">
+                  <input type="checkbox" checked={chapterIds.includes(ch.id)} onChange={(e) => { setScope("CUSTOM"); setChapterIds((ids) => (e.target.checked ? [...ids.filter((x) => x !== "__none__"), ch.id] : ids.filter((x) => x !== ch.id))); }} />
                   {ch.number}. {ch.title} {ch.isAlp && <span className="badge ok">ALP</span>} <span className="muted small">({ch._count.questions})</span>
                 </label>
               ))}
@@ -509,7 +432,7 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
           </select>
           <button className="btn-ghost" onClick={() => setSections((ss) => [...ss, { id: rid(), title: `Q.${ss.length + 1}`, questionType: "SHORT", marksEach: 2, count: 5, questions: [] }])}>+ Section</button>
           <button className="btn-ghost" title="Questions are cached in this browser for 24 hours. Refresh to load the newest ones." onClick={async () => { await invalidateCache("q:"); await invalidateCache("book:"); await invalidateCache("cat:"); await reload(); setRefreshKey((k) => k + 1); }}>↻ Refresh questions</button>
-          <button disabled={!autoAll.length || !sections.length} title={autoPickBlocked || undefined} onClick={autofill}>🎲 Auto-pick{FEATURES.bookAutoPick ? " from bank" : " from Question Bank"}</button>
+          <button disabled={!all.length || !sections.length} onClick={autofill}>🎲 Auto-pick from bank</button>
         </div>
         <p className="small muted">Counts and marks are editable. “Attempt any” sets the choice rule — only that many questions count toward the total.</p>
 
@@ -554,9 +477,9 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
                           </div>
                         )}
                       </div>
-                      <button className="btn-ghost btn-sm" title="Edit this question (only in this paper)" onClick={() => setEditQ({ sec: si, qi, draft: { ...q, type: s.questionType } })}>✏️ Edit</button>
+                      <button className="btn-ghost btn-sm" title="Edit this question (only in this paper)" onClick={() => setEditQ({ sec: si, qi, draft: { ...q, type: s.questionType } })}>✏️</button>
                       {!q.id.startsWith("custom-") && <button className="btn-ghost btn-sm" title="Swap with another question" onClick={() => swap(si, qi)}>⇄</button>}
-                      <button className="btn-danger btn-sm" title="Remove from this paper" onClick={() => updateSec(si, { questions: s.questions.filter((_, j) => j !== qi) })}>✕ Remove</button>
+                      <button className="btn-danger btn-sm" onClick={() => updateSec(si, { questions: s.questions.filter((_, j) => j !== qi) })}>✕</button>
                     </div>
                     {editQ?.sec === si && editQ.qi === qi && (
                       <div className="card" style={{ marginTop: 6 }}>
@@ -585,88 +508,42 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
                   {pool(s.questionType).map((q) => <option key={q.id} value={q.id}>{q.fromBook ? `📘 ${q.qNo ?? ""} ` : ""}{(q.text || "[image]").slice(0, 90)}</option>)}
                 </select>
                 <button className="btn-ghost btn-sm" onClick={() => setCustom({ sec: si, draft: { ...emptyDraft(s.questionType), marks: s.marksEach } })}>+ Write a custom question</button>
-                {useBook && bookId && (
-                  <button className="btn-ghost btn-sm" onClick={() => setByNo({ sec: si, chapterId: "", exerciseId: "", numbers: "", ticked: [] })}>📘 Pick from book (tick questions)</button>
+                {useBook && outline.some((c) => c.exercises.length) && (
+                  <button className="btn-ghost btn-sm" onClick={() => setByNo({ sec: si, exerciseId: "", numbers: "" })}>📘 Add by exercise & question no.</button>
                 )}
               </div>
-              {byNo?.sec === si && (() => {
-                const chs = outline.filter((c) => bookTicked(c.id) || (isCustom && !bookChapterIds.length));
-                const ch = outline.find((c) => c.id === byNo.chapterId);
-                const list = pickerItems(byNo);
-                const free = list.filter((q) => !used.has(q.id) && allowedInSection(q as QuestionSnapshot, s.questionType));
-                const need = Math.max(0, s.count - s.questions.length);
-                return (
-                  <div className="card" style={{ marginTop: 8 }}>
-                    <div className="row">
-                      <b>📘 Pick from book</b>
-                      <select style={{ maxWidth: 300 }} value={byNo.chapterId} onChange={(e) => setByNo({ ...byNo, chapterId: e.target.value, exerciseId: "", ticked: [] })}>
-                        <option value="">All chapters in this paper ({chs.length})</option>
-                        {chs.map((c) => <option key={c.id} value={c.id}>Ch {c.number}: {c.title} ({c._count.items})</option>)}
-                      </select>
-                      <select style={{ maxWidth: 260 }} value={byNo.exerciseId} disabled={!ch} onChange={(e) => setByNo({ ...byNo, exerciseId: e.target.value })}>
-                        <option value="">{ch ? "All exercises" : "— choose a chapter for its exercises —"}</option>
-                        {ch?.exercises.map((e) => <option key={e.id} value={e.id}>{e.title} ({e._count.items})</option>)}
-                        {ch && <option value="_other">Teacher / auto-generated questions</option>}
-                      </select>
-                      <span className="spacer" />
-                      <button className="btn-ghost btn-sm" onClick={() => setByNo(null)}>Close</button>
-                    </div>
-                    <div className="row" style={{ marginTop: 6 }}>
-                      <input style={{ width: 160 }} placeholder="Q no. e.g. 1-5, 8" value={byNo.numbers} onChange={(e) => setByNo({ ...byNo, numbers: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") tickByNumbers(); }} />
-                      <button className="btn-ghost btn-sm" disabled={!byNo.numbers.trim()} onClick={tickByNumbers}>Tick these numbers</button>
-                      <button className="btn-ghost btn-sm" disabled={!free.length} onClick={() => setByNo({ ...byNo, ticked: [...new Set([...byNo.ticked, ...free.map((q) => q.id)])] })}>Tick all ({free.length})</button>
-                      <button className="btn-ghost btn-sm" disabled={!byNo.ticked.length} onClick={() => setByNo({ ...byNo, ticked: [] })}>Untick all</button>
-                      <span className="small muted">Only {QTYPE_LABEL[s.questionType]} can go in this section · section needs {need} more</span>
-                    </div>
-                    {loadingPool > 0 ? <p className="small muted">Loading the book's questions…</p> : !list.length ? (
-                      <p className="small" style={{ color: "var(--warn)" }}>No questions here. {outline.every((c) => !c._count.items) ? "This book has no questions yet — open it in Book Library (scanned / Urdu book: 📘 Re-read from PDF (OCR))." : "Choose another chapter or exercise."}</p>
-                    ) : (
-                      <div style={{ maxHeight: 320, overflow: "auto", marginTop: 8, border: "1px solid var(--line)", borderRadius: 6 }}>
-                        {list.map((q) => {
-                          const ok = allowedInSection(q as QuestionSnapshot, s.questionType);
-                          const inPaper = used.has(q.id);
-                          return (
-                            <label key={q.id} className="check" style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 8px", borderBottom: "1px solid var(--line)", opacity: ok && !inPaper ? 1 : 0.45 }}>
-                              <input type="checkbox" disabled={!ok || inPaper} checked={byNo.ticked.includes(q.id)} onChange={(e) => setByNo({ ...byNo, ticked: e.target.checked ? [...byNo.ticked, q.id] : byNo.ticked.filter((x) => x !== q.id) })} />
-                              <span style={{ flex: 1 }}>
-                                <span className="badge">{QTYPE_SHORT[q.type]}</span> {q.qNo && <b>({q.qNo})</b>} <MathText text={(q.text || "[image]").slice(0, 220)} />
-                                {q.type === "MCQ" && q.options && <span className="small muted"> — {q.options.map((o, i) => `(${"abcde"[i]}) ${o}`).join("  ")}</span>}
-                                {inPaper && <span className="badge ok" style={{ marginLeft: 6 }}>in paper</span>}
-                                {!ok && !inPaper && <span className="small muted"> (not a {QTYPE_SHORT[s.questionType]} question)</span>}
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    )}
-                    <div className="row" style={{ marginTop: 8 }}>
-                      <button className="btn-sm" disabled={!byNo.ticked.length} onClick={addTicked}>Add {byNo.ticked.length || ""} ticked question{byNo.ticked.length === 1 ? "" : "s"} to this section</button>
-                    </div>
+              {byNo?.sec === si && (
+                <div className="card" style={{ marginTop: 8 }}>
+                  <div className="row">
+                    <select style={{ maxWidth: 380 }} value={byNo.exerciseId} onChange={(e) => setByNo({ ...byNo, exerciseId: e.target.value })}>
+                      <option value="">— chapter / exercise —</option>
+                      {outline.filter((c) => !bookChapterIds.length || bookChapterIds.includes(c.id)).map((c) => (
+                        <optgroup key={c.id} label={`Ch ${c.number}: ${c.title}`}>
+                          {c.exercises.map((e) => <option key={e.id} value={e.id}>{e.title} ({e._count.items} Qs)</option>)}
+                        </optgroup>
+                      ))}
+                    </select>
+                    <input style={{ width: 170 }} placeholder="Q no. e.g. 1-5, 8" value={byNo.numbers} onChange={(e) => setByNo({ ...byNo, numbers: e.target.value })} />
+                    <span className="small muted">Only {QTYPE_LABEL[s.questionType]} are added to this section.</span>
+                    <button className="btn-sm" disabled={!byNo.exerciseId || !byNo.numbers.trim()} onClick={addByNumbers}>Add</button>
+                    <button className="btn-ghost btn-sm" onClick={() => setByNo(null)}>Cancel</button>
                   </div>
-                );
-              })()}
+                  {byNo.exerciseId && (
+                    <ol className="small" style={{ maxHeight: 180, overflow: "auto", margin: "8px 0 0", paddingLeft: 26 }}>
+                      {bookItems.filter((q) => q.exerciseId === byNo.exerciseId).map((q) => (
+                        <li key={q.id} style={{ opacity: allowedInSection(q as QuestionSnapshot, s.questionType) ? 1 : 0.4 }}>
+                          <span className="badge">{QTYPE_SHORT[q.type]}</span> {q.qNo && <b>({q.qNo})</b>} {q.text.slice(0, 110)} {used.has(q.id) && <span className="badge ok">in paper</span>}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              )}
               {custom?.sec === si && (
                 <div className="card" style={{ marginTop: 8 }}>
                   <QuestionForm compact lockType value={custom.draft} onChange={(d) => setCustom({ sec: si, draft: { ...d, type: s.questionType } })} />
                   <div className="row" style={{ marginTop: 8 }}>
-                    {sub && sub.chapters.length > 0 && (
-                      <label className="check small">
-                        <input type="checkbox" checked={saveToBank.on} onChange={(e) => setSaveToBank({ on: e.target.checked, chapterId: saveToBank.chapterId || sub.chapters[0].id })} /> Also save to Question Bank
-                        {saveToBank.on && (
-                          <select style={{ width: 220, marginLeft: 6 }} value={saveToBank.chapterId} onChange={(e) => setSaveToBank({ ...saveToBank, chapterId: e.target.value })}>
-                            {sub.chapters.map((c) => <option key={c.id} value={c.id}>Ch {c.number}: {c.title}</option>)}
-                          </select>
-                        )}
-                      </label>
-                    )}
-                    <button className="btn-sm" disabled={!custom.draft.text.trim() && !custom.draft.imageSnippet && !custom.draft.urduText} onClick={async () => {
-                      const d = cleanDraft({ ...custom.draft, type: s.questionType });
-                      if (saveToBank.on && saveToBank.chapterId) {
-                        try { await api("/api/questions", "POST", { chapterId: saveToBank.chapterId, questions: [d] }); } catch (e) { setErr(`Saved in the paper, but not in Question Bank: ${(e as Error).message}`); }
-                      }
-                      updateSec(si, { questions: [...s.questions, toSnapshot(d, s.marksEach, s.questionType)] });
-                      setCustom(null);
-                    }}>Add to section</button>
+                    <button className="btn-sm" onClick={() => { updateSec(si, { questions: [...s.questions, toSnapshot({ ...custom.draft, type: s.questionType }, s.marksEach, s.questionType)] }); setCustom(null); }}>Add to section</button>
                     <button className="btn-ghost btn-sm" onClick={() => setCustom(null)}>Cancel</button>
                   </div>
                 </div>
@@ -681,8 +558,6 @@ export default function PaperBuilder({ initial }: { initial?: BuilderInitial }) 
         <b>Total marks: {total}</b>
         <span className="muted small">{sections.reduce((a, s) => a + s.questions.length, 0)} questions</span>
         <span className="spacer" />
-        {autoPickBlocked && sections.length > 0 && <span className="small" style={{ color: "var(--warn)", maxWidth: 420 }}>{autoPickBlocked}</span>}
-        <button className="btn-ghost" disabled={!!autoPickBlocked} title={autoPickBlocked || "Fill every section with questions from the chosen chapters"} onClick={autofill}>🎲 Auto-pick</button>
         <button disabled={saving} onClick={save}>{saving ? "Saving…" : initial ? "Save changes & preview" : "Save paper & preview"}</button>
       </div>
     </div>

@@ -341,7 +341,6 @@ model BookPage {
   pageNo    Int // PDF page number (1-based)
   text      String       @db.Text
   ocr       Boolean      @default(false)
-  ocrLevel  Int          @default(0) // 0 = PDF text, 1 = quick heading scan only (OCR'd later chapter by chapter), 2 = full OCR
   chapterId String?
   chapter   BookChapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
 

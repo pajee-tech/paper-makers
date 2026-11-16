@@ -36,7 +36,7 @@ export const GET = handle(async (req: Request, { params }: Ctx) => {
       id: true, chapterId: true, exerciseId: true, pageNo: true, qNo: true, topic: true, source: true, type: true, text: true,
       urduText: true, options: true, correctOption: true, answer: true, matchPairs: true, marks: true, imageSnippet: full,
     },
-    orderBy: [{ chapter: { number: "asc" } }, { createdAt: "asc" }], // printed order (createdAt is kept 1 ms apart on save)
+    orderBy: [{ chapter: { number: "asc" } }, { exerciseId: "asc" }, { createdAt: "asc" }],
     take: 2000,
   });
   return json({ items });
@@ -56,10 +56,8 @@ export const POST = handle(async (req: Request, { params }: Ctx) => {
   const b = Add.parse(await req.json());
   const ch = await prisma.bookChapter.findFirst({ where: { id: b.chapterId, bookId: book.id } });
   if (!ch) throw new HttpError(404, "Chapter not found");
-  const t0 = Date.now();
   const res = await prisma.bookItem.createMany({
-    data: b.items.map((q, i) => ({
-      createdAt: new Date(t0 + i), // keeps the order they were added in
+    data: b.items.map((q) => ({
       bookId: book.id, chapterId: ch.id, exerciseId: b.exerciseId ?? null, source: b.source,
       pageNo: q.pageNo ?? null, qNo: q.qNo ?? null, topic: q.topic ?? null,
       type: q.type, text: q.text, urduText: q.urduText ?? null, options: q.options ?? Prisma.DbNull, correctOption: q.correctOption ?? null,
